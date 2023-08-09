@@ -8,12 +8,11 @@ import (
 )
 
 type PostRef struct {
-	ID        uint      `gorm:"primarykey"`
-	CreatedAt time.Time `gorm:"index:idx_post_uid_created"`
-
+	ID         uint      `gorm:"primarykey"`
+	CreatedAt  time.Time `gorm:"index:idx_post_uid_created,index:idx_post_uid_is_reply_created"`
 	Cid        string
 	Rkey       string `gorm:"uniqueIndex:idx_post_rkeyuid"`
-	Uid        uint   `gorm:"uniqueIndex:idx_post_rkeyuid,index:idx_post_uid_created"`
+	Uid        uint   `gorm:"uniqueIndex:idx_post_rkeyuid,index:idx_post_uid_created,index:idx_post_uid_is_reply_created"`
 	NotFound   bool
 	Likes      int
 	Reposts    int
@@ -21,7 +20,7 @@ type PostRef struct {
 	ThreadSize int
 	ThreadRoot uint
 	ReplyTo    uint `gorm:"index"`
-	IsReply    bool `gorm:"index"`
+	IsReply    bool `gorm:"index:idx_post_uid_is_reply_created"`
 	HasImage   bool
 	Reposting  uint
 }

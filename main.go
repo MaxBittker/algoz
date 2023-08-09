@@ -115,9 +115,9 @@ var runCmd = &cli.Command{
 			EnvVars: []string{"DATABASE_URL"},
 		},
 		&cli.StringFlag{
-			Name:     "atp-bgs-host",
-			Required: true,
-			EnvVars:  []string{"ATP_BGS_HOST"},
+			Name:    "atp-bgs-host",
+			Value:   "wss://bsky.social",
+			EnvVars: []string{"ATP_BGS_HOST"},
 		},
 		&cli.BoolFlag{
 			Name:    "readonly",
@@ -153,15 +153,70 @@ var runCmd = &cli.Command{
 		}
 
 		log.Info("Migrating database")
-		db.AutoMigrate(&models.User{})
-		db.AutoMigrate(&models.Follow{})
-		db.AutoMigrate(&LastSeq{})
-		db.AutoMigrate(&models.PostRef{})
-		db.AutoMigrate(&models.FeedIncl{})
-		db.AutoMigrate(&models.Feed{})
-		db.AutoMigrate(&models.FeedLike{})
-		db.AutoMigrate(&models.FeedRepost{})
-		db.AutoMigrate(&models.Block{})
+		// db.AutoMigrate(&models.User{})
+		// db.Exec("ALTER TABLE users ADD COLUMN temp_id SERIAL;")
+		// db.Exec("UPDATE users SET temp_id = id;")
+		// db.Exec("ALTER TABLE users DROP COLUMN id;")
+		// db.Exec("ALTER TABLE users RENAME COLUMN temp_id TO id;")
+		// db.Exec("ALTER TABLE users ADD PRIMARY KEY (id);")
+		// db.AutoMigrate(&models.Follow{})
+
+		// db.Exec("ALTER TABLE follows ADD COLUMN temp_id SERIAL;")
+		// db.Exec("UPDATE follows SET temp_id = id;")
+		// db.Exec("ALTER TABLE follows DROP COLUMN id;")
+		// db.Exec("ALTER TABLE follows RENAME COLUMN temp_id TO id;")
+		// db.Exec("ALTER TABLE follows ADD PRIMARY KEY (id);")
+		// db.AutoMigrate(&LastSeq{})
+
+		// db.Exec("ALTER TABLE last_seqs ADD COLUMN temp_id SERIAL;")
+		// db.Exec("UPDATE last_seqs SET temp_id = id;")
+		// db.Exec("ALTER TABLE last_seqs DROP COLUMN id;")
+		// db.Exec("ALTER TABLE last_seqs RENAME COLUMN temp_id TO id;")
+		// db.Exec("ALTER TABLE last_seqs ADD PRIMARY KEY (id);")
+		// db.AutoMigrate(&models.PostRef{})
+
+		// db.Exec("ALTER TABLE post_refs ADD COLUMN temp_id SERIAL;")
+		// db.Exec("UPDATE post_refs SET temp_id = id;")
+		// db.Exec("ALTER TABLE post_refs DROP COLUMN id;")
+		// db.Exec("ALTER TABLE post_refs RENAME COLUMN temp_id TO id;")
+		// db.Exec("ALTER TABLE post_refs ADD PRIMARY KEY (id);")
+		// db.AutoMigrate(&models.FeedIncl{})
+
+		// db.Exec("ALTER TABLE feed_incls ADD COLUMN temp_id SERIAL;")
+		// db.Exec("UPDATE feed_incls SET temp_id = id;")
+		// db.Exec("ALTER TABLE feed_incls DROP COLUMN id;")
+		// db.Exec("ALTER TABLE feed_incls RENAME COLUMN temp_id TO id;")
+		// db.Exec("ALTER TABLE feed_incls ADD PRIMARY KEY (id);")
+		// db.AutoMigrate(&models.Feed{})
+
+		// db.Exec("ALTER TABLE feeds ADD COLUMN temp_id SERIAL;")
+		// db.Exec("UPDATE feeds SET temp_id = id;")
+		// db.Exec("ALTER TABLE feeds DROP COLUMN id;")
+		// db.Exec("ALTER TABLE feeds RENAME COLUMN temp_id TO id;")
+		// db.Exec("ALTER TABLE feeds ADD PRIMARY KEY (id);")
+		// db.AutoMigrate(&models.FeedLike{})
+
+		// db.Exec("ALTER TABLE feed_likes ADD COLUMN temp_id SERIAL;")
+		// db.Exec("UPDATE  feed_likes SET temp_id = id;")
+		// db.Exec("ALTER TABLE feed_likes DROP COLUMN id;")
+		// db.Exec("ALTER TABLE feed_likes RENAME COLUMN temp_id TO id;")
+		// db.Exec("ALTER TABLE feed_likes ADD PRIMARY KEY (id);")
+		// db.AutoMigrate(&models.FeedRepost{})
+
+		// db.Exec("ALTER TABLE feed_reposts ADD COLUMN temp_id SERIAL;")
+		// db.Exec("UPDATE feed_reposts SET temp_id = id;")
+		// db.Exec("ALTER TABLE feed_reposts DROP COLUMN id;")
+		// db.Exec("ALTER TABLE feed_reposts RENAME COLUMN temp_id TO id;")
+		// db.Exec("ALTER TABLE feed_reposts ADD PRIMARY KEY (id);")
+		// db.AutoMigrate(&models.Block{})
+
+		// db.Exec("ALTER TABLE blocks ADD COLUMN temp_id SERIAL;")
+		// db.Exec("UPDATE  blocks  SET temp_id = id;")
+		// db.Exec("ALTER TABLE blocks DROP COLUMN id;")
+		// db.Exec("ALTER TABLE blocks RENAME COLUMN temp_id TO id;")
+		// db.Exec("ALTER TABLE blocks ADD PRIMARY KEY (id);")
+		//exit the process:
+		// os.Exit(0)
 
 		log.Infof("Configuring HTTP server")
 		e := echo.New()
@@ -222,7 +277,7 @@ var runCmd = &cli.Command{
 			s.didDoc = doc
 		}
 
-		mydid := "did:plc:vpkhqolt662uhesyj6nxm7ys"
+		mydid := "did:plc:wmhp7mubpgafjggwvaxeozmu"
 		middlebit := mydid + "/app.bsky.feed.generator/"
 
 		// Create some initial feed definitions
@@ -242,44 +297,7 @@ var runCmd = &cli.Command{
 				Description: "most popular posts for every ten minutes",
 				Uri:         "at://" + middlebit + "mostpop",
 			},
-			{
-				Name:        "cats",
-				Description: "cat pictures",
-				Uri:         "at://" + middlebit + "cats",
-			},
-			{
-				Name:        "dogs",
-				Description: "dog pictures",
-				Uri:         "at://" + middlebit + "dogs",
-			},
-			{
-				Name:        "nsfw",
-				Description: "nsfw pics",
-				Uri:         "at://" + middlebit + "nsfw",
-			},
-			{
-				Name:        "seacreatures",
-				Description: "All your favorite sea creatures",
-				Uri:         "at://" + middlebit + "seacreatures",
-			},
-			{
-				Name:        "flowers",
-				Description: "pictures of the flowers (potentially nsfw)",
-				Uri:         "at://" + middlebit + "flowers",
-			},
 		}
-
-		allpicsuri := "at://" + middlebit + "allpics"
-		s.AddFeedBuilder(allpicsuri, &AllPicsFeed{
-			name: "allpics",
-			desc: "Every picture posted on the app",
-			s:    s,
-		})
-
-		allqpsuri := "at://" + middlebit + "allqps"
-		s.AddFeedBuilder(allqpsuri, &QuotePostsFeed{
-			s: s,
-		})
 
 		followpicsuri := "at://" + middlebit + "followpics"
 		s.AddFeedBuilder(followpicsuri, &FollowPics{
@@ -295,8 +313,6 @@ var runCmd = &cli.Command{
 		s.AddFeedBuilder(enjoyuri, &EnjoyFeed{
 			s: s,
 		})
-
-		s.AddProcessor(NewImageLabeler(cctx.String("img-class-host"), s.db, s.xrpcc, s.addPostToFeed))
 
 		for _, f := range s.feeds {
 			if err := s.db.Create(&models.Feed{
@@ -334,7 +350,9 @@ var runCmd = &cli.Command{
 		if cctx.Bool("no-index") {
 			select {}
 		}
-
+		// go func() {
+		// 	s.pollAllUsersFollows(context.Background())
+		// }()
 		ctx := context.TODO()
 		if err := s.Run(ctx); err != nil {
 			return fmt.Errorf("failed to run: %w", err)
@@ -342,6 +360,37 @@ var runCmd = &cli.Command{
 
 		return nil
 	},
+}
+
+func (s *Server) pollAllUsersFollows(ctx context.Context) error {
+	c := time.Tick(3000 * time.Millisecond)
+	for _ = range c {
+		var users []User
+		if err := s.db.Where("scraped_follows = false").Where("handle is not null").Order("random()").Limit(10).Find(&users).Error; err != nil {
+			log.Error(err)
+			continue
+		}
+
+		// var wg sync.WaitGroup
+
+		// Consumers.
+		for i := 0; i < 5; i++ {
+			// wg.Add(1)
+			u := users[i]
+			go func(u *User) {
+				// defer wg.Done()
+				if !u.HasFollowsScraped() {
+					// log.Error(u)
+					if err := s.scrapeFollowsForUser(ctx, u); err != nil {
+						log.Error("Failed to scrape follows for user %s: %v", u.ID, err)
+					}
+				}
+			}(&u)
+		}
+
+		// wg.Wait() // Wait for all goroutines to finish.
+	}
+	return nil
 }
 
 func loadDidDocument(fn string) (*did.Document, error) {
@@ -447,6 +496,15 @@ func (s *Server) handleGetFeedSkeleton(e echo.Context) error {
 	span.SetAttributes(attribute.String("feed", feed))
 
 	var authedUser *User
+
+	// u, err := s.getOrCreateUser(ctx, "did:plc:wmhp7mubpgafjggwvaxeozmu")
+	// if err != nil {
+	// 	return fmt.Errorf("failed to create user: %w", err)
+	// }
+
+	// authedUser = u
+	// span.SetAttributes(attribute.String("did", u.Did))
+
 	if auth := e.Request().Header.Get("Authorization"); auth != "" {
 		parts := strings.Split(auth, " ")
 		if parts[0] != "Bearer" || len(parts) != 2 {
@@ -634,6 +692,7 @@ func (s *Server) getMostPop(ctx context.Context, limit int, cursor *string) ([]*
 }
 
 func (s *Server) scrapeFollowsForUser(ctx context.Context, u *User) error {
+	log.Error("scraping " + u.Handle)
 	var cursor string
 	for {
 		resp, err := atproto.RepoListRecords(ctx, s.xrpcc, "app.bsky.graph.follow", cursor, 100, u.Did, false, "", "")
@@ -666,7 +725,7 @@ func (s *Server) scrapeFollowsForUser(ctx context.Context, u *User) error {
 		cursor = *resp.Cursor
 	}
 
-	if err := s.db.Table("users").Where("id = ?", u.ID).Update("scraped_follows", true).Error; err != nil {
+	if err := s.db.Debug().Table("users").Where("id = ?", u.ID).Update("scraped_follows", true).Error; err != nil {
 		return err
 	}
 	u.SetFollowsScraped(true)
@@ -711,26 +770,37 @@ func (s *Server) latestPostForUser(ctx context.Context, uid uint) (*PostRef, err
 	}
 }
 
+func backfillLatestPost(ctx context.Context, s *Server, u *User, pseudoRandomHashExpression string, seed int, limit int, start int) {
+	var fusers []User
+	s.db.Debug().Table("follows as f1").
+		Joins("LEFT JOIN users on f1.following = users.id").
+		Where("f1.uid = ?", u.ID).
+		Clauses(
+			clause.OrderBy{
+				Expression: gorm.Expr(pseudoRandomHashExpression, seed),
+			}).
+		Limit(limit).
+		Offset(start).
+		Scan(&fusers)
+
+	for _, f := range fusers {
+		// log.Error(f)
+		if !f.HasFollowsScraped() {
+			s.scrapeFollowsForUser(ctx, &f)
+		}
+
+		if f.LatestPost == 0 {
+			s.latestPostForUser(ctx, f.ID)
+		}
+	}
+}
+
 func (s *Server) getMostRecentFromFollows(ctx context.Context, u *User, limit int, cursor *string) ([]*bsky.FeedDefs_SkeletonFeedPost, *string, error) {
 	if !u.HasFollowsScraped() {
 		if err := s.scrapeFollowsForUser(ctx, u); err != nil {
 			return nil, nil, err
 		}
 	}
-
-	/*
-		query := `
-			SELECT post_refs.*
-			FROM post_refs
-			INNER JOIN (
-				SELECT following, MAX(created_at) as MaxCreated
-				FROM post_refs
-				INNER JOIN follows ON post_refs.uid = follows.following
-				WHERE follows.uid = ?
-				GROUP BY following
-			) post_refs_grouped ON post_refs.uid = post_refs_grouped.following AND post_refs.created_at = post_refs_grouped.MaxCreated
-		`
-	*/
 
 	start := 0
 	if cursor != nil {
@@ -743,39 +813,42 @@ func (s *Server) getMostRecentFromFollows(ctx context.Context, u *User, limit in
 	}
 
 	// Generate random number for current day
-	seedseed := time.Now().YearDay()
+	currentTime := time.Now()
+	hoursSinceYearStart := currentTime.YearDay() * 24
+	seedseed := hoursSinceYearStart + currentTime.Hour() + currentTime.Second()
+
 	r := rand.New(rand.NewSource(int64(seedseed)))
 	seed := r.Intn(65536)
 
-	pseudoRandomHashExpression := "CAST(ABS((CAST(follows.id as REAL) * CAST(follows.id as REAL) + ?) % 65536 * 13107) as INTEGER)"
-
-	var fusers []User
-	if err := s.db.Table("follows").Joins("LEFT JOIN users on follows.following = users.id").Where("follows.uid = ?", u.ID).Limit(limit).Offset(start).Clauses(
-		clause.OrderBy{
-			Expression: gorm.Expr(pseudoRandomHashExpression, seed),
-		}).Scan(&fusers).Error; err != nil {
-		return nil, nil, err
-	}
-
-	for _, f := range fusers {
-		if f.LatestPost == 0 {
-			_, err := s.latestPostForUser(ctx, f.ID)
-			if err != nil {
-				return nil, nil, err
-			}
-		}
-	}
+	pseudoRandomHashExpression := "CAST(ABS((CAST(f1.id as numeric) * CAST(f1.id as numeric) + ?) % 65536.0 * 13107.0) as INTEGER)"
+	// var fusers []User
+	// if err := s.db.Table("follows").
+	// 	Joins("LEFT JOIN users on follows.following = users.id").
+	// 	Where("follows.uid = ?", u.ID).
+	// 	Where("users.latest_post > 0").
+	// 	Clauses(
+	// 		clause.OrderBy{
+	// 			Expression: gorm.Expr(pseudoRandomHashExpression, seed),
+	// 		}).
+	// 	Limit(limit).
+	// 	Offset(start).
+	// 	Scan(&fusers).Error; err != nil {
+	// 	return nil, nil, err
+	// }
 
 	var out []PostRef
-	if err := s.db.Table("follows").
-		Joins("LEFT JOIN users on follows.following = users.id").
+	if err := s.db.Table("follows as f1").
+		Joins("INNER JOIN follows as f2 on f1.following = f2.uid").
+		Joins("INNER JOIN users on f2.uid = users.id").
 		Joins("INNER JOIN post_refs on users.latest_post = post_refs.id").
-		Where("follows.uid = ?", u.ID).
+		Where("f1.uid = ? AND f2.following = ?", u.ID, u.ID).
+		Where("users.latest_post > 0").
+		Clauses(
+			clause.OrderBy{
+				Expression: gorm.Expr(pseudoRandomHashExpression, seed),
+			}).
 		Limit(limit).
-		Offset(start).Clauses(
-		clause.OrderBy{
-			Expression: gorm.Expr(pseudoRandomHashExpression, seed),
-		}).
+		Offset(start).
 		Scan(&out).Error; err != nil {
 		return nil, nil, err
 	}
@@ -786,6 +859,9 @@ func (s *Server) getMostRecentFromFollows(ctx context.Context, u *User, limit in
 	}
 
 	curs := fmt.Sprint(start + limit)
+
+	ctxAsync, _ := context.WithCancel(context.Background())
+	go backfillLatestPost(ctxAsync, s, u, pseudoRandomHashExpression, seed, limit, start)
 
 	return fp, &curs, nil
 }
@@ -904,8 +980,21 @@ func (s *Server) handleDescribeFeedGenerator(e echo.Context) error {
 	return e.JSON(200, out)
 }
 
+type DidResponse struct {
+	Context []string      `json:"@context"`
+	ID      string        `json:"id"`
+	Service []did.Service `json:"service"`
+}
+
 func (s *Server) handleServeDidDoc(e echo.Context) error {
-	return e.JSON(200, s.didDoc)
+
+	didResponse := DidResponse{
+		Context: s.didDoc.Context,
+		ID:      s.didDoc.ID.String(),
+		Service: s.didDoc.Service,
+	}
+
+	return e.JSON(200, didResponse)
 }
 
 func (s *Server) deletePost(ctx context.Context, u *User, path string) error {
@@ -1072,13 +1161,13 @@ func (s *Server) indexPost(ctx context.Context, u *User, rec *bsky.FeedPost, pat
 }
 
 func (s *Server) setUserLastPost(u *User, p *PostRef) error {
-	return u.DoLocked(func() error {
-		if err := s.db.Table("users").Where("id = ?", u.ID).Update("latest_post", p.ID).Error; err != nil {
-			return err
-		}
-		u.LatestPost = p.ID
-		return nil
-	})
+	// return u.DoLocked(func() error {
+	if err := s.db.Table("users").Where("id = ?", u.ID).Update("latest_post", p.ID).Error; err != nil {
+		return err
+	}
+	u.LatestPost = p.ID
+	return nil
+	// })
 }
 
 func (s *Server) incrementReplyTo(ctx context.Context, uri string) error {

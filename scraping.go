@@ -90,7 +90,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 				case repomgr.EvtKindDeleteRecord:
 					if err := s.handleOp(ctx, ek, evt.Seq, op.Path, evt.Repo, nil, nil); err != nil {
-						log.Errorf("failed to handle delete: %s", err)
+						// log.Errorf("failed to handle delete: %s", err)
 						return nil
 					}
 				}
@@ -150,9 +150,9 @@ func (s *Server) handleOp(ctx context.Context, op repomgr.EventKind, seq int64, 
 				return fmt.Errorf("indexing profile: %w", err)
 			}
 		case *bsky.FeedLike:
-			if err := s.handleLike(ctx, u, rec, path); err != nil {
-				return fmt.Errorf("handling like: %w", err)
-			}
+			// if err := s.handleLike(ctx, u, rec, path); err != nil {
+			// 	return fmt.Errorf("handling like: %w", err)
+			// }
 		case *bsky.FeedRepost:
 			if err := s.handleRepost(ctx, u, rec, path); err != nil {
 				return fmt.Errorf("handling repost: %w", err)
@@ -183,9 +183,9 @@ func (s *Server) handleOp(ctx context.Context, op repomgr.EventKind, seq int64, 
 				return err
 			}
 		case "app.bsky.feed.like":
-			if err := s.deleteLike(ctx, u, path); err != nil {
-				return err
-			}
+			// if err := s.deleteLike(ctx, u, path); err != nil {
+			// 	return err
+			// }
 		case "app.bsky.feed.repost":
 			if err := s.deleteRepost(ctx, u, path); err != nil {
 				return err
