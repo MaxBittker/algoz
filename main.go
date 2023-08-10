@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -151,7 +150,10 @@ var runCmd = &cli.Command{
 		if err != nil {
 			return err
 		}
-
+		// CREATE INDEX idx_post_uid_is_reply_createdON post_refs (uid, is_reply, created_at DESC);
+		// CREATE INDEX idx_post_uid_is_reply_created_atON post_refs (uid, is_reply, created_at DESC);
+		// CREATE INDEX idx_post_uid_rkeyON post_refs (uid, rkey);
+		// CREATE INDEX idx_follows_uid_rkeyON follows (uid, rkey);
 		log.Info("Migrating database")
 		// db.AutoMigrate(&models.User{})
 		// db.Exec("ALTER TABLE users ADD COLUMN temp_id SERIAL;")
@@ -770,16 +772,13 @@ func (s *Server) latestPostForUser(ctx context.Context, uid uint) (*PostRef, err
 	}
 }
 
-func backfillLatestPost(ctx context.Context, s *Server, u *User, pseudoRandomHashExpression string, seed int, limit int, start int) {
+func backfillLatestPost(ctx context.Context, s *Server, u *User, limit int, start int) {
 	var fusers []User
-	s.db.Debug().Table("follows as f1").
+	s.db.Table("follows as f1").
 		Joins("LEFT JOIN users on f1.following = users.id").
 		Where("f1.uid = ?", u.ID).
-		Clauses(
-			clause.OrderBy{
-				Expression: gorm.Expr(pseudoRandomHashExpression, seed),
-			}).
-		Limit(limit).
+		// Order("random()").
+		// Limit(limit).
 		Offset(start).
 		Scan(&fusers)
 
@@ -811,47 +810,44 @@ func (s *Server) getMostRecentFromFollows(ctx context.Context, u *User, limit in
 
 		start = num
 	}
-
-	// Generate random number for current day
-	currentTime := time.Now()
-	hoursSinceYearStart := currentTime.YearDay() * 24
-	seedseed := hoursSinceYearStart + currentTime.Hour() + currentTime.Second()
-
-	r := rand.New(rand.NewSource(int64(seedseed)))
-	seed := r.Intn(65536)
-
-	pseudoRandomHashExpression := "CAST(ABS((CAST(f1.id as numeric) * CAST(f1.id as numeric) + ?) % 65536.0 * 13107.0) as INTEGER)"
-	// var fusers []User
-	// if err := s.db.Table("follows").
-	// 	Joins("LEFT JOIN users on follows.following = users.id").
-	// 	Where("follows.uid = ?", u.ID).
-	// 	Where("users.latest_post > 0").
-	// 	Clauses(
-	// 		clause.OrderBy{
-	// 			Expression: gorm.Expr(pseudoRandomHashExpression, seed),
-	// 		}).
-	// 	Limit(limit).
-	// 	Offset(start).
-	// 	Scan(&fusers).Error; err != nil {
-	// 	return nil, nil, err
-	// }
-
 	var out []PostRef
-	if err := s.db.Table("follows as f1").
+
+	err := s.db.Table("follows as f1").
 		Joins("INNER JOIN follows as f2 on f1.following = f2.uid").
 		Joins("INNER JOIN users on f2.uid = users.id").
-		Joins("INNER JOIN post_refs on users.latest_post = post_refs.id").
+		Joins(`INNER JOIN post_refs on post_refs.id =
+		 (SELECT id FROM ( 
+			SELECT id FROM "post_refs"
+			WHERE uid = users.id AND NOT is_reply
+			ORDER BY created_at DESC
+			LIMIT 5
+		 )post_refs_ordered
+		  ORDER BY random()
+		  LIMIT 1)
+		 `).
 		Where("f1.uid = ? AND f2.following = ?", u.ID, u.ID).
-		Where("users.latest_post > 0").
-		Clauses(
-			clause.OrderBy{
-				Expression: gorm.Expr(pseudoRandomHashExpression, seed),
-			}).
+		Order("random()").
 		Limit(limit).
 		Offset(start).
-		Scan(&out).Error; err != nil {
+		Scan(&out).Error
+
+	if err != nil {
 		return nil, nil, err
 	}
+
+	// var out []PostRef
+	// if err := s.db.Table("follows as f1").
+	// 	Joins("INNER JOIN follows as f2 on f1.following = f2.uid").
+	// 	Joins("INNER JOIN users on f2.uid = users.id").
+	// 	Joins("INNER JOIN post_refs on users.latest_post = post_refs.id").
+	// 	Where("f1.uid = ? AND f2.following = ?", u.ID, u.ID).
+	// 	Where("users.latest_post > 0").
+	// 	Order("random()").
+	// 	Limit(limit).
+	// 	Offset(start).
+	// 	Scan(&out).Error; err != nil {
+	// 	return nil, nil, err
+	// }
 
 	fp, err := s.postsToFeed(ctx, out)
 	if err != nil {
@@ -861,7 +857,7 @@ func (s *Server) getMostRecentFromFollows(ctx context.Context, u *User, limit in
 	curs := fmt.Sprint(start + limit)
 
 	ctxAsync, _ := context.WithCancel(context.Background())
-	go backfillLatestPost(ctxAsync, s, u, pseudoRandomHashExpression, seed, limit, start)
+	go backfillLatestPost(ctxAsync, s, u, limit, start)
 
 	return fp, &curs, nil
 }
