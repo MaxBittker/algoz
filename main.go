@@ -811,14 +811,33 @@ func (s *Server) getSimilarToLikes(ctx context.Context, u *User, limit int, curs
 
 	var out []PostRef
 
-	err := s.db.Table("images").Select("post_refs.*").
-		Joins("JOIN post_refs ON post_refs.id = images.ref").
-		Where("images.id IS NOT NULL AND NOT post_refs.is_reply").
-		Order("random()").
-		Limit(limit).
-		Offset(start).
-		Scan(&out).Error
+	userId := u.ID
 
+	subQuery := fmt.Sprintf(`(SELECT images.embedding FROM images
+	JOIN feed_likes ON feed_likes.ref = images.ref
+	JOIN users ON users.id = feed_likes.uid
+	WHERE users.id = %d ORDER BY feed_likes.ID desc LIMIT 1)`, userId)
+
+	query := fmt.Sprintf(`
+	SELECT post_refs.*
+	FROM images
+	JOIN post_refs ON post_refs.id = images.ref
+	WHERE images.id IS NOT NULL
+	AND NOT post_refs.is_reply
+	AND images.id != (
+		SELECT images.id
+		FROM images
+		JOIN feed_likes ON feed_likes.ref = images.ref
+		JOIN users ON users.id = feed_likes.uid
+		WHERE users.id = %d
+		ORDER BY feed_likes.ID desc
+		LIMIT 1
+	)
+	ORDER BY images.embedding <-> %s
+	LIMIT 30;
+	`, userId, subQuery)
+
+	err := s.db.Debug().Raw(query).Scan(&out).Error
 	if err != nil {
 		return nil, nil, err
 	}
