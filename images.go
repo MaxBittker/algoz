@@ -41,15 +41,7 @@ func (ip *ImageProcessor) HandlePost(ctx context.Context, u *User, pref *PostRef
 		for _, img := range rec.Embed.EmbedImages.Images {
 			hash, embedding, err := ip.fetchAndEmbedImage(ctx, ip.db, u.Did, img)
 
-			strs := make([]string, len(embedding))
-			for i, f := range embedding {
-				strs[i] = strconv.FormatFloat(f, 'f', -1, 64)
-			}
-
-			// join strings with comma and add brackets
-			result := fmt.Sprintf("[%s]", strings.Join(strs, ","))
-
-			ip.db.Exec(("INSERT INTO images (ref, hash, embedding) VALUES (?, ?, ?)"), pref.ID, hash, result)
+			ip.db.Exec(("INSERT INTO images (ref, hash, embedding) VALUES (?, ?, ?)"), pref.ID, hash, embedding)
 
 			// log.Error(class)
 			if err != nil {
@@ -62,11 +54,11 @@ func (ip *ImageProcessor) HandlePost(ctx context.Context, u *User, pref *PostRef
 	return nil
 }
 
-func (ip *ImageProcessor) fetchAndEmbedImage(ctx context.Context, db *gorm.DB, did string, img *bsky.EmbedImages_Image) (string, []float64, error) {
+func (ip *ImageProcessor) fetchAndEmbedImage(ctx context.Context, db *gorm.DB, did string, img *bsky.EmbedImages_Image) (string, string, error) {
 	blob, err := atproto.SyncGetBlob(ctx, ip.xrpcc, img.Image.Ref.String(), did)
 
 	if err != nil {
-		return "", nil, err
+		return "", "", err
 	}
 
 	hash := sha256.Sum256(blob)
@@ -74,15 +66,31 @@ func (ip *ImageProcessor) fetchAndEmbedImage(ctx context.Context, db *gorm.DB, d
 
 	//check if we already have it
 
-	var image Image
-	result := db.Limit(1).First(&image, "hash = ?", hashStr)
-	if result.Error == nil {
-		return hashStr, []float64(image.Embedding), nil
+	type imgRow struct {
+		Hash      string
+		Embedding string
+	}
+	var image imgRow
+	result := db.Table("images").
+		Where("hash = ?", hashStr).
+		Limit(1).
+		Scan(&image)
+
+	if result.Error == nil && result.RowsAffected > 0 {
+		return hashStr, image.Embedding, nil
 	}
 
 	embedding, err := ip.ic.Embed(ctx, blob)
 
-	return hashStr, embedding, err
+	strs := make([]string, len(embedding))
+	for i, f := range embedding {
+		strs[i] = strconv.FormatFloat(f, 'f', -1, 64)
+	}
+
+	// join strings with comma and add brackets
+	embeddingString := fmt.Sprintf("[%s]", strings.Join(strs, ","))
+
+	return hashStr, embeddingString, err
 }
 
 func (ip *ImageProcessor) HandleLike(context.Context, *User, *bsky.FeedPost) error {

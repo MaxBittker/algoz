@@ -598,7 +598,7 @@ func (s *Server) handleGetFeedSkeleton(e echo.Context) error {
 				Message: "auth required for feed",
 			}
 		}
-		feed, outcurs, err := s.getMostRecentFromFollows(ctx, authedUser, limit, cursor)
+		feed, outcurs, err := s.getSimilarToLikes(ctx, authedUser, limit, cursor)
 		if err != nil {
 			return err
 		}
@@ -796,6 +796,41 @@ func backfillLatestPost(ctx context.Context, s *Server, u *User, limit int, star
 			s.latestPostForUser(ctx, f.ID)
 		}
 	}
+}
+
+func (s *Server) getSimilarToLikes(ctx context.Context, u *User, limit int, cursor *string) ([]*bsky.FeedDefs_SkeletonFeedPost, *string, error) {
+	start := 0
+	if cursor != nil {
+		num, err := strconv.Atoi(*cursor)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid cursor: %w", err)
+		}
+
+		start = num
+	}
+
+	var out []PostRef
+
+	err := s.db.Table("images").Select("post_refs.*").
+		Joins("JOIN post_refs ON post_refs.id = images.ref").
+		Where("images.id IS NOT NULL AND NOT post_refs.is_reply").
+		Order("random()").
+		Limit(limit).
+		Offset(start).
+		Scan(&out).Error
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	fp, err := s.postsToFeed(ctx, out)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	curs := fmt.Sprint(start + limit)
+
+	return fp, &curs, nil
 }
 
 func (s *Server) getMostRecentFromFollows(ctx context.Context, u *User, limit int, cursor *string) ([]*bsky.FeedDefs_SkeletonFeedPost, *string, error) {
