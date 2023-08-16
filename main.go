@@ -119,8 +119,8 @@ var runCmd = &cli.Command{
 			EnvVars: []string{"ATP_BGS_HOST"},
 		},
 		&cli.BoolFlag{
-			Name:    "readonly",
-			EnvVars: []string{"READONLY"},
+			Name:    "classifier-mode",
+			EnvVars: []string{"CLASSIFIER_MODE"},
 		},
 		&cli.StringFlag{
 			Name:  "plc-host",
@@ -154,7 +154,7 @@ var runCmd = &cli.Command{
 		// CREATE INDEX idx_post_uid_is_reply_created_atON post_refs (uid, is_reply, created_at DESC);
 		// CREATE INDEX idx_post_uid_rkeyON post_refs (uid, rkey);
 		// CREATE INDEX idx_follows_uid_rkeyON follows (uid, rkey);
-		log.Info("Migrating database")
+		// log.Info("Migrating database")
 		// db.AutoMigrate(&models.User{})
 		// db.Exec("ALTER TABLE users ADD COLUMN temp_id SERIAL;")
 		// db.Exec("UPDATE users SET temp_id = id;")
@@ -218,6 +218,9 @@ var runCmd = &cli.Command{
 		// db.Exec("ALTER TABLE blocks RENAME COLUMN temp_id TO id;")
 		// db.Exec("ALTER TABLE blocks ADD PRIMARY KEY (id);")
 		//exit the process:
+
+		// db.Exec("CREATE TABLE images (id SERIAL PRIMARY KEY, Ref bigint, hash CHAR(64), embedding vector(512));");
+
 		// os.Exit(0)
 
 		log.Infof("Configuring HTTP server")
@@ -283,23 +286,7 @@ var runCmd = &cli.Command{
 		middlebit := mydid + "/app.bsky.feed.generator/"
 
 		// Create some initial feed definitions
-		s.feeds = []feedSpec{
-			{
-				Name:        "upandup",
-				Description: "posts that recently hit 12 likes",
-				Uri:         "at://" + middlebit + "upandup",
-			},
-			{
-				Name:        "coolstuff",
-				Description: "posts by specific cool people, maybe",
-				Uri:         "at://" + middlebit + "coolstuff",
-			},
-			{
-				Name:        "mostpop",
-				Description: "most popular posts for every ten minutes",
-				Uri:         "at://" + middlebit + "mostpop",
-			},
-		}
+		s.feeds = []feedSpec{}
 
 		followpicsuri := "at://" + middlebit + "followpics"
 		s.AddFeedBuilder(followpicsuri, &FollowPics{
@@ -315,6 +302,8 @@ var runCmd = &cli.Command{
 		s.AddFeedBuilder(enjoyuri, &EnjoyFeed{
 			s: s,
 		})
+
+		s.AddProcessor(NewImageProcessor("http://0.0.0.0:8181/", s.db, s.xrpcc))
 
 		for _, f := range s.feeds {
 			if err := s.db.Create(&models.Feed{
@@ -341,13 +330,16 @@ var runCmd = &cli.Command{
 			// Cache certificates to avoid issues with rate limits (https://letsencrypt.org/docs/rate-limits)
 			e.AutoTLSManager.Cache = autocert.DirCache(filepath.Join(cachedir, "certs"))
 		}
-		go func() {
-			if atd != "" {
-				panic(e.StartAutoTLS(":3339"))
-			} else {
-				panic(e.Start(":3339"))
-			}
-		}()
+		if !cctx.Bool("classifier-mode") {
+			go func() {
+
+				if atd != "" {
+					panic(e.StartAutoTLS(":3339"))
+				} else {
+					panic(e.Start(":3339"))
+				}
+			}()
+		}
 
 		if cctx.Bool("no-index") {
 			select {}
@@ -567,7 +559,7 @@ func (s *Server) handleGetFeedSkeleton(e echo.Context) error {
 	}
 
 	switch puri.Rkey {
-	case "coolstuff", "cats", "dogs", "nsfw", "seacreatures", "flowers":
+	case "cats", "dogs", "nsfw", "seacreatures", "flowers":
 		// all of these feeds are fed by the same 'feed_incls' table
 		feed, outcurs, err := s.getFeed(ctx, puri.Rkey, limit, cursor)
 		if err != nil {
@@ -599,6 +591,22 @@ func (s *Server) handleGetFeedSkeleton(e echo.Context) error {
 			Feed:   feed,
 			Cursor: curs,
 		})
+	case "river":
+		if authedUser == nil {
+			return &echo.HTTPError{
+				Code:    403,
+				Message: "auth required for feed",
+			}
+		}
+		feed, outcurs, err := s.getMostRecentFromFollows(ctx, authedUser, limit, cursor)
+		if err != nil {
+			return err
+		}
+
+		return e.JSON(200, &bsky.FeedGetFeedSkeleton_Output{
+			Feed:   feed,
+			Cursor: outcurs,
+		})
 	case "bestoffollows":
 		if authedUser == nil {
 			return &echo.HTTPError{
@@ -621,10 +629,6 @@ func (s *Server) handleGetFeedSkeleton(e echo.Context) error {
 			Message: "no such feed",
 		}
 	}
-}
-
-func (s *Server) getWhatsLit(ctx context.Context, limit int, cursor *string) ([]*bsky.FeedDefs_SkeletonFeedPost, *string, error) {
-	panic("no")
 }
 
 func (s *Server) getMostPop(ctx context.Context, limit int, cursor *string) ([]*bsky.FeedDefs_SkeletonFeedPost, *string, error) {
@@ -1141,12 +1145,6 @@ func (s *Server) indexPost(ctx context.Context, u *User, rec *bsky.FeedPost, pat
 		}
 	}
 
-	if u.Blessed {
-		if err := s.addPostToFeed(ctx, "coolstuff", pref); err != nil {
-			return err
-		}
-	}
-
 	/*
 		if err := s.addPostToFeed(ctx, "nsfw", pref); err != nil {
 			return err
@@ -1305,11 +1303,11 @@ func (s *Server) handleLike(ctx context.Context, u *User, rec *bsky.FeedLike, pa
 		return err
 	}
 
-	if p.Likes == 11 {
-		if err := s.addPostToFeed(ctx, "upandup", p); err != nil {
-			return err
-		}
-	}
+	// if p.Likes == 11 {
+	// 	if err := s.addPostToFeed(ctx, "upandup", p); err != nil {
+	// 		return err
+	// 	}
+	// }
 
 	return nil
 }

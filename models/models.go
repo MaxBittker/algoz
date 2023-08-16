@@ -79,6 +79,12 @@ type User struct {
 	Lk sync.Mutex `gorm:"-"`
 }
 
+type Image struct {
+	Ref       int64     `gorm:"type:bigint"`
+	Hash      string    `gorm:"type:char(64)"`
+	Embedding []float64 `gorm:"type:float8[]"`
+}
+
 func (u *User) DoLocked(f func() error) error {
 	u.Lk.Lock()
 	defer u.Lk.Unlock()

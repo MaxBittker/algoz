@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/bluesky-social/indigo/api/atproto"
 	bsky "github.com/bluesky-social/indigo/api/bsky"
@@ -11,75 +15,80 @@ import (
 	"gorm.io/gorm"
 )
 
-type ImageLabeler struct {
-	ic *ImageClassifier
+type ImageProcessor struct {
+	ic *ImageEmbedder
 	db *gorm.DB
 
 	xrpcc *xrpc.Client
-
-	addLabel AddLabelFunc
 }
 
 type AddLabelFunc func(context.Context, string, *PostRef) error
 
-func NewImageLabeler(classifierHost string, db *gorm.DB, xrpcc *xrpc.Client, addlabel AddLabelFunc) *ImageLabeler {
-	ic := &ImageClassifier{
-		Host: classifierHost,
+func NewImageProcessor(embedderHost string, db *gorm.DB, xrpcc *xrpc.Client) *ImageProcessor {
+	ic := &ImageEmbedder{
+		Host: embedderHost,
 	}
 
-	return &ImageLabeler{
-		ic:       ic,
-		db:       db,
-		xrpcc:    xrpcc,
-		addLabel: addlabel,
+	return &ImageProcessor{
+		ic:    ic,
+		db:    db,
+		xrpcc: xrpcc,
 	}
 }
 
-func (il *ImageLabeler) HandlePost(ctx context.Context, u *User, pref *PostRef, rec *bsky.FeedPost) error {
+func (ip *ImageProcessor) HandlePost(ctx context.Context, u *User, pref *PostRef, rec *bsky.FeedPost) error {
 	if rec.Embed != nil && rec.Embed.EmbedImages != nil {
 		for _, img := range rec.Embed.EmbedImages.Images {
-			class, err := il.fetchAndClassifyImage(ctx, u.Did, img)
+			hash, embedding, err := ip.fetchAndEmbedImage(ctx, ip.db, u.Did, img)
+
+			strs := make([]string, len(embedding))
+			for i, f := range embedding {
+				strs[i] = strconv.FormatFloat(f, 'f', -1, 64)
+			}
+
+			// join strings with comma and add brackets
+			result := fmt.Sprintf("[%s]", strings.Join(strs, ","))
+
+			ip.db.Exec(("INSERT INTO images (ref, hash, embedding) VALUES (?, ?, ?)"), pref.ID, hash, result)
+
+			// log.Error(class)
 			if err != nil {
 				return fmt.Errorf("classification failed: %w", err)
 			}
 
-			switch class {
-			case "cat":
-				if err := il.addLabel(ctx, "cats", pref); err != nil {
-					return err
-				}
-			case "dog":
-				if err := il.addLabel(ctx, "dogs", pref); err != nil {
-					return err
-				}
-			case "sea creature":
-				if err := il.addLabel(ctx, "seacreatures", pref); err != nil {
-					return err
-				}
-			case "flower":
-				if err := il.addLabel(ctx, "flowers", pref); err != nil {
-					return err
-				}
-			}
 		}
 	}
 
 	return nil
 }
 
-func (il *ImageLabeler) fetchAndClassifyImage(ctx context.Context, did string, img *bsky.EmbedImages_Image) (string, error) {
-	blob, err := atproto.SyncGetBlob(ctx, il.xrpcc, img.Image.Ref.String(), did)
+func (ip *ImageProcessor) fetchAndEmbedImage(ctx context.Context, db *gorm.DB, did string, img *bsky.EmbedImages_Image) (string, []float64, error) {
+	blob, err := atproto.SyncGetBlob(ctx, ip.xrpcc, img.Image.Ref.String(), did)
+
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
-	return il.ic.Classify(ctx, blob)
+	hash := sha256.Sum256(blob)
+	hashStr := hex.EncodeToString(hash[:])
+
+	//check if we already have it
+
+	var image Image
+	result := db.Limit(1).First(&image, "hash = ?", hashStr)
+	if result.Error == nil {
+		return hashStr, []float64(image.Embedding), nil
+	}
+
+	embedding, err := ip.ic.Embed(ctx, blob)
+
+	return hashStr, embedding, err
 }
 
-func (il *ImageLabeler) HandleLike(context.Context, *User, *bsky.FeedPost) error {
+func (ip *ImageProcessor) HandleLike(context.Context, *User, *bsky.FeedPost) error {
 	return nil
 }
 
-func (il *ImageLabeler) HandleRepost(context.Context, *User, *bsky.FeedPost) error {
+func (ip *ImageProcessor) HandleRepost(context.Context, *User, *bsky.FeedPost) error {
 	return nil
 }
