@@ -213,6 +213,7 @@ var runCmd = &cli.Command{
 		//exit the process:
 
 		// db.Exec("CREATE TABLE images (id SERIAL PRIMARY KEY, Ref bigint, hash CHAR(64), embedding vector(512));");
+		// CREATE INDEX ON images USING ivfflat (embedding vector_cosine_ops) WITH (lists = 50);
 
 		// os.Exit(0)
 
@@ -843,7 +844,7 @@ func (s *Server) getSimilarToLikes(ctx context.Context, u *User, limit int, curs
 		ORDER BY feed_likes.ID desc
 		LIMIT 1
 	)
-	ORDER BY images.embedding <-> %s
+	ORDER BY images.embedding <=> %s
 	LIMIT 30
 	OFFSET %d;
 	`, userId, subQuery, start)
