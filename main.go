@@ -53,7 +53,7 @@ type FeedBuilder interface {
 
 type Processor interface {
 	HandlePost(context.Context, *User, *PostRef, *bsky.FeedPost) error
-	HandleLike(context.Context, *User, *PostRef, *bsky.FeedPost) error
+	HandleLike(context.Context, *User, *PostRef, *bsky.FeedPost, string) error
 	HandleRepost(context.Context, *User, *bsky.FeedPost) error
 }
 
@@ -1165,16 +1165,19 @@ func (s *Server) handleLike(ctx context.Context, u *User, rec *bsky.FeedLike, pa
 	if err := s.db.Model(&PostRef{}).Where("id = ?", p.ID).Update("likes", gorm.Expr("likes + 1")).Error; err != nil {
 		return err
 	}
-	// for _, fb := range s.processors {
-	// if err := fb.HandleLike(ctx, u, p, rec); err != nil {
-	// return err
-	// }
-	// }
-	// if p.Likes == 11 {
-	// 	if err := s.addPostToFeed(ctx, "upandup", p); err != nil {
-	// 		return err
-	// 	}
-	// }
+
+	if p.HasImage && !p.Embedded {
+		p_rec, _, err := s.getRecord(ctx, rec.Subject.Uri)
+		if err != nil {
+			return err
+		}
+		for _, fb := range s.processors {
+
+			if err := fb.HandleLike(ctx, u, p, p_rec, rec.Subject.Uri); err != nil {
+				return err
+			}
+		}
+	}
 
 	return nil
 }

@@ -218,7 +218,7 @@ func (f *EnjoyFeed) HandlePost(context.Context, *User, *PostRef, *bsky.FeedPost)
 	return nil
 }
 
-func (f *EnjoyFeed) HandleLike(context.Context, *User, *PostRef, *bsky.FeedPost) error {
+func (f *EnjoyFeed) HandleLike(ctx context.Context, u *User, pref *PostRef, rec *bsky.FeedPost, uri string) error {
 	return nil
 }
 

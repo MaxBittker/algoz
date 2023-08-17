@@ -277,7 +277,8 @@ func (f *GoodFollows) HandlePost(context.Context, *User, *PostRef, *bsky.FeedPos
 	return nil
 }
 
-func (f *GoodFollows) HandleLike(context.Context, *User, *PostRef, *bsky.FeedPost) error {
+func (f *GoodFollows) HandleLike(ctx context.Context, u *User, pref *PostRef, rec *bsky.FeedPost, uri string) error {
+
 	return nil
 }
 

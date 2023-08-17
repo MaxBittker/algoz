@@ -10,6 +10,7 @@ import (
 
 	"github.com/bluesky-social/indigo/api/atproto"
 	bsky "github.com/bluesky-social/indigo/api/bsky"
+	"github.com/bluesky-social/indigo/util"
 	"github.com/bluesky-social/indigo/xrpc"
 	. "github.com/whyrusleeping/algoz/models"
 	"gorm.io/gorm"
@@ -49,7 +50,37 @@ func (ip *ImageProcessor) HandlePost(ctx context.Context, u *User, pref *PostRef
 
 			// log.Error(class)
 			if err != nil {
-				return fmt.Errorf("classification failed: %w", err)
+				return fmt.Errorf("embedding failed: %w", err)
+			}
+
+		}
+	}
+
+	return nil
+}
+
+func (ip *ImageProcessor) HandleLike(ctx context.Context, u *User, pref *PostRef, rec *bsky.FeedPost, uri string) error {
+	if rec.Embed != nil && rec.Embed.EmbedImages != nil {
+		for _, img := range rec.Embed.EmbedImages.Images {
+
+			puri, err := util.ParseAtUri(uri)
+			if err != nil {
+				return fmt.Errorf("ParseAtUri failed: %w", err)
+			}
+			hash, embedding, err := ip.fetchAndEmbedImage(ctx, ip.db, puri.Did, img)
+
+			if err != nil {
+				return fmt.Errorf("fetch & embed failed: %w", err)
+			}
+
+			ip.db.Exec(("INSERT INTO images (ref, hash, embedding) VALUES (?, ?, ?)"), pref.ID, hash, embedding)
+			if err := ip.db.Model(&PostRef{}).Where("id = ?", pref.ID).Update("embedded", true).Error; err != nil {
+				return err
+			}
+
+			// log.Error(class)
+			if err != nil {
+				return fmt.Errorf("embedding failed: %w", err)
 			}
 
 		}
@@ -95,11 +126,6 @@ func (ip *ImageProcessor) fetchAndEmbedImage(ctx context.Context, db *gorm.DB, d
 	embeddingString := fmt.Sprintf("[%s]", strings.Join(strs, ","))
 
 	return hashStr, embeddingString, err
-}
-
-func (ip *ImageProcessor) HandleLike(ctx context.Context, u *User, pref *PostRef, rec *bsky.FeedPost) error {
-
-	return nil
 }
 
 func (ip *ImageProcessor) HandleRepost(context.Context, *User, *bsky.FeedPost) error {
