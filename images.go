@@ -37,11 +37,15 @@ func NewImageProcessor(embedderHost string, db *gorm.DB, xrpcc *xrpc.Client) *Im
 }
 
 func (ip *ImageProcessor) HandlePost(ctx context.Context, u *User, pref *PostRef, rec *bsky.FeedPost) error {
+
 	if rec.Embed != nil && rec.Embed.EmbedImages != nil {
 		for _, img := range rec.Embed.EmbedImages.Images {
 			hash, embedding, err := ip.fetchAndEmbedImage(ctx, ip.db, u.Did, img)
 
 			ip.db.Exec(("INSERT INTO images (ref, hash, embedding) VALUES (?, ?, ?)"), pref.ID, hash, embedding)
+			if err := ip.db.Model(&PostRef{}).Where("id = ?", pref.ID).Update("embedded", true).Error; err != nil {
+				return err
+			}
 
 			// log.Error(class)
 			if err != nil {
@@ -93,7 +97,8 @@ func (ip *ImageProcessor) fetchAndEmbedImage(ctx context.Context, db *gorm.DB, d
 	return hashStr, embeddingString, err
 }
 
-func (ip *ImageProcessor) HandleLike(context.Context, *User, *bsky.FeedPost) error {
+func (ip *ImageProcessor) HandleLike(ctx context.Context, u *User, pref *PostRef, rec *bsky.FeedPost) error {
+
 	return nil
 }
 

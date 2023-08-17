@@ -22,6 +22,7 @@ type PostRef struct {
 	ReplyTo    uint `gorm:"index"`
 	IsReply    bool `gorm:"index:idx_post_uid_is_reply_created"`
 	HasImage   bool
+	Embedded   bool
 	Reposting  uint
 }
 

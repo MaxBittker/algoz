@@ -20,6 +20,8 @@ import (
 	"github.com/bluesky-social/indigo/xrpc"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	es256k "github.com/ericvolp12/jwt-go-secp256k1"
+	"github.com/getsentry/sentry-go"
+	sentryecho "github.com/getsentry/sentry-go/echo"
 	"github.com/golang-jwt/jwt"
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/ipfs/go-cid"
@@ -38,12 +40,6 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-//type User = models.User
-//type PostRef = models.PostRef
-//type FeedLike = models.FeedLike
-//type FeedRepost = models.FeedRepost
-//type Feed = models.Feed
-
 var EpochOne time.Time = time.Unix(1, 1)
 
 var log = logging.Logger("algoz")
@@ -55,13 +51,9 @@ type FeedBuilder interface {
 	Processor
 }
 
-type Labeler interface {
-	Processor
-}
-
 type Processor interface {
 	HandlePost(context.Context, *User, *PostRef, *bsky.FeedPost) error
-	HandleLike(context.Context, *User, *bsky.FeedPost) error
+	HandleLike(context.Context, *User, *PostRef, *bsky.FeedPost) error
 	HandleRepost(context.Context, *User, *bsky.FeedPost) error
 }
 
@@ -71,6 +63,7 @@ type LastSeq struct {
 }
 
 func main() {
+
 	app := cli.NewApp()
 
 	app.Flags = []cli.Flag{}
@@ -224,11 +217,28 @@ var runCmd = &cli.Command{
 		// os.Exit(0)
 
 		log.Infof("Configuring HTTP server")
+		// To initialize Sentry's handler, you need to initialize Sentry itself beforehand
+		if err := sentry.Init(sentry.ClientOptions{
+			EnableTracing: true,
+
+			Dsn: "https://4c3eb0efa5f720cac18d362052b4fd12@o40136.ingest.sentry.io/4505718108717056",
+			// Set TracesSampleRate to 1.0 to capture 100%
+			// of transactions for performance monitoring.
+			// We recommend adjusting this value in production,
+			TracesSampleRate: 1.0,
+		}); err != nil {
+			fmt.Printf("Sentry initialization failed: %v		", err)
+		}
+
 		e := echo.New()
 		e.Use(middleware.Logger())
-		e.HTTPErrorHandler = func(err error, c echo.Context) {
-			log.Error(err)
-		}
+		e.Use(middleware.Recover())
+
+		e.Use(sentryecho.New(sentryecho.Options{}))
+
+		// e.HTTPErrorHandler = func(err error, c echo.Context) {
+		// 	log.Error(err)
+		// }
 
 		xc := &xrpc.Client{
 			Host:    cctx.String("pds-host"),
@@ -834,8 +844,9 @@ func (s *Server) getSimilarToLikes(ctx context.Context, u *User, limit int, curs
 		LIMIT 1
 	)
 	ORDER BY images.embedding <-> %s
-	LIMIT 30;
-	`, userId, subQuery)
+	LIMIT 30
+	OFFSET %d;
+	`, userId, subQuery, start)
 
 	err := s.db.Debug().Raw(query).Scan(&out).Error
 	if err != nil {
@@ -892,20 +903,6 @@ func (s *Server) getMostRecentFromFollows(ctx context.Context, u *User, limit in
 	if err != nil {
 		return nil, nil, err
 	}
-
-	// var out []PostRef
-	// if err := s.db.Table("follows as f1").
-	// 	Joins("INNER JOIN follows as f2 on f1.following = f2.uid").
-	// 	Joins("INNER JOIN users on f2.uid = users.id").
-	// 	Joins("INNER JOIN post_refs on users.latest_post = post_refs.id").
-	// 	Where("f1.uid = ? AND f2.following = ?", u.ID, u.ID).
-	// 	Where("users.latest_post > 0").
-	// 	Order("random()").
-	// 	Limit(limit).
-	// 	Offset(start).
-	// 	Scan(&out).Error; err != nil {
-	// 	return nil, nil, err
-	// }
 
 	fp, err := s.postsToFeed(ctx, out)
 	if err != nil {
@@ -1356,7 +1353,11 @@ func (s *Server) handleLike(ctx context.Context, u *User, rec *bsky.FeedLike, pa
 	if err := s.db.Model(&PostRef{}).Where("id = ?", p.ID).Update("likes", gorm.Expr("likes + 1")).Error; err != nil {
 		return err
 	}
-
+	// for _, fb := range s.processors {
+	// if err := fb.HandleLike(ctx, u, p, rec); err != nil {
+	// return err
+	// }
+	// }
 	// if p.Likes == 11 {
 	// 	if err := s.addPostToFeed(ctx, "upandup", p); err != nil {
 	// 		return err
@@ -1373,25 +1374,6 @@ func (s *Server) getFeedRef(ctx context.Context, feed string) (*Feed, error) {
 	}
 
 	return &f, nil
-}
-
-func (s *Server) addPostToFeed(ctx context.Context, feed string, p *PostRef) error {
-	f, err := s.getFeedRef(ctx, feed)
-	if err != nil {
-		return err
-	}
-
-	if err := s.db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "feed"}, {Name: "post"}},
-		DoNothing: true,
-	}).Create(&FeedIncl{
-		Post: p.ID,
-		Feed: f.ID,
-	}).Error; err != nil {
-		return err
-	}
-
-	return nil
 }
 
 func (s *Server) handleRepost(ctx context.Context, u *User, rec *bsky.FeedRepost, path string) error {

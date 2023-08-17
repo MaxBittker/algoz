@@ -6,6 +6,7 @@ require (
 	github.com/bluesky-social/indigo v0.0.0-20230705011933-76a638564246
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.1.0
 	github.com/ericvolp12/jwt-go-secp256k1 v0.0.1
+	github.com/getsentry/sentry-go v0.23.0
 	github.com/golang-jwt/jwt v3.2.2+incompatible
 	github.com/gorilla/websocket v1.5.0
 	github.com/hashicorp/golang-lru v0.5.4
