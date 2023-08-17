@@ -299,16 +299,6 @@ var runCmd = &cli.Command{
 		// Create some initial feed definitions
 		s.feeds = []feedSpec{}
 
-		followpicsuri := "at://" + middlebit + "followpics"
-		s.AddFeedBuilder(followpicsuri, &FollowPics{
-			s: s,
-		})
-
-		cozyuri := "at://" + middlebit + "cozy"
-		s.AddFeedBuilder(cozyuri, &GoodFollows{
-			s: s,
-		})
-
 		enjoyuri := "at://" + middlebit + "enjoy"
 		s.AddFeedBuilder(enjoyuri, &EnjoyFeed{
 			s: s,
@@ -570,38 +560,6 @@ func (s *Server) handleGetFeedSkeleton(e echo.Context) error {
 	}
 
 	switch puri.Rkey {
-	case "cats", "dogs", "nsfw", "seacreatures", "flowers":
-		// all of these feeds are fed by the same 'feed_incls' table
-		feed, outcurs, err := s.getFeed(ctx, puri.Rkey, limit, cursor)
-		if err != nil {
-			return err
-		}
-
-		return e.JSON(200, &bsky.FeedGetFeedSkeleton_Output{
-			Feed:   feed,
-			Cursor: outcurs,
-		})
-	case "upandup":
-		feed, outcurs, err := s.getFeedAddOrder(ctx, puri.Rkey, limit, cursor)
-		if err != nil {
-			return err
-		}
-
-		return e.JSON(200, &bsky.FeedGetFeedSkeleton_Output{
-			Feed:   feed,
-			Cursor: outcurs,
-		})
-	case "mostpop":
-		// mostpop is fed by a sql query over all the posts
-		feed, curs, err := s.getMostPop(ctx, limit, cursor)
-		if err != nil {
-			return err
-		}
-
-		return e.JSON(200, &bsky.FeedGetFeedSkeleton_Output{
-			Feed:   feed,
-			Cursor: curs,
-		})
 	case "river":
 		if authedUser == nil {
 			return &echo.HTTPError{
@@ -640,72 +598,6 @@ func (s *Server) handleGetFeedSkeleton(e echo.Context) error {
 			Message: "no such feed",
 		}
 	}
-}
-
-func (s *Server) getMostPop(ctx context.Context, limit int, cursor *string) ([]*bsky.FeedDefs_SkeletonFeedPost, *string, error) {
-	// Get current time
-	now := time.Now().UTC().Truncate(time.Minute * 10)
-
-	if cursor != nil {
-		tc, err := parseTimeCursor(*cursor)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		now = tc.UTC().Truncate(time.Minute * 10)
-	}
-
-	// Get the time 6 hours ago
-	sixHoursAgo := now.Add(-6 * time.Hour)
-
-	// Raw SQL query
-	query := `
-		SELECT *
-		FROM post_refs
-		LEFT JOIN users on post_refs.uid = users.id
-		WHERE (users.blocked IS NULL OR users.blocked = false) AND post_refs.created_at BETWEEN $1 AND $2
-		ORDER BY likes DESC
-		LIMIT 1
-	`
-
-	// Initialize an empty slice to store the posts
-	var posts []PostRef
-
-	// Iterate over each 10-minute window in the past 6 hours
-	for t := now; t.After(sixHoursAgo); t = t.Add(-10 * time.Minute) {
-		// Define the start and end of the window
-		windowEnd := t
-		windowStart := t.Add(-10 * time.Minute)
-
-		// Convert to PostgreSQL-compatible datetime strings
-		windowStartStr := windowStart.Format("2006-01-02 15:04:05")
-		windowEndStr := windowEnd.Format("2006-01-02 15:04:05")
-
-		// Execute query and scan the results into a PostRef
-		var post PostRef
-		if err := s.db.Raw(query, windowStartStr, windowEndStr).Scan(&post).Error; err != nil {
-			// If an error occurred, return the error
-			return nil, nil, err
-		}
-
-		if post.ID > 0 {
-			// Add the post to the slice of posts
-			posts = append(posts, post)
-		}
-
-		if len(posts) >= limit {
-			break
-		}
-	}
-
-	skelposts, err := s.postsToFeed(ctx, posts)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	outcurs := posts[len(posts)-1].CreatedAt.UTC().Format(time.RFC3339)
-
-	return skelposts, &outcurs, nil
 }
 
 func (s *Server) scrapeFollowsForUser(ctx context.Context, u *User) error {
@@ -930,87 +822,6 @@ func (s *Server) postsToFeed(ctx context.Context, posts []PostRef) ([]*bsky.Feed
 	}
 
 	return out, nil
-}
-
-func parseTimeCursor(c string) (time.Time, error) {
-	return time.Parse(time.RFC3339, c)
-}
-
-// same as normal getFeed, except it sorts by when the post was added to the feed, not by post creation date
-func (s *Server) getFeedAddOrder(ctx context.Context, feed string, limit int, cursor *string) ([]*bsky.FeedDefs_SkeletonFeedPost, *string, error) {
-	log.Infof("serving %s", feed)
-	f, err := s.getFeedRef(ctx, feed)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	var posts []PostRef
-	q := s.db.Table("feed_incls").Where("feed_incls.feed = ?", f.ID).Joins("INNER JOIN post_refs on post_refs.id = feed_incls.post").Select("post_refs.*").Order("feed_incls.id desc").Limit(limit)
-	if cursor != nil {
-		curs, err := strconv.Atoi(*cursor)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		q = q.Where("feed_incls.id < ?", curs)
-	}
-	if err := q.Find(&posts).Error; err != nil {
-		return nil, nil, err
-	}
-
-	skelposts, err := s.postsToFeed(ctx, posts)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if len(skelposts) == 0 {
-		return []*bsky.FeedDefs_SkeletonFeedPost{}, nil, nil
-	}
-
-	var outcursv int
-	if err := s.db.Table("feed_incls").Where("feed = ? AND post = ?", f.ID, posts[len(posts)-1].ID).Select("id").Scan(&outcursv).Error; err != nil {
-		return nil, nil, err
-	}
-	outcurs := fmt.Sprint(outcursv)
-
-	return skelposts, &outcurs, nil
-}
-
-func (s *Server) getFeed(ctx context.Context, feed string, limit int, cursor *string) ([]*bsky.FeedDefs_SkeletonFeedPost, *string, error) {
-	ctx, span := otel.Tracer("algoz").Start(ctx, "getFeed")
-	defer span.End()
-
-	f, err := s.getFeedRef(ctx, feed)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	var posts []PostRef
-	q := s.db.Table("feed_incls").Where("feed_incls.feed = ?", f.ID).Joins("INNER JOIN post_refs on post_refs.id = feed_incls.post").Select("post_refs.*").Order("post_refs.created_at desc").Limit(limit)
-	if cursor != nil {
-		t, err := time.Parse(time.RFC3339, *cursor)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		q = q.Where("post_refs.created_at < ?", t)
-	}
-	if err := q.Find(&posts).Error; err != nil {
-		return nil, nil, err
-	}
-
-	if len(posts) == 0 {
-		return []*bsky.FeedDefs_SkeletonFeedPost{}, nil, nil
-	}
-
-	skelposts, err := s.postsToFeed(ctx, posts)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	outcurs := posts[len(posts)-1].CreatedAt.Format(time.RFC3339)
-
-	return skelposts, &outcurs, nil
 }
 
 func (s *Server) uriForPost(ctx context.Context, pr *PostRef) (string, error) {
@@ -1366,15 +1177,6 @@ func (s *Server) handleLike(ctx context.Context, u *User, rec *bsky.FeedLike, pa
 	// }
 
 	return nil
-}
-
-func (s *Server) getFeedRef(ctx context.Context, feed string) (*Feed, error) {
-	var f Feed
-	if err := s.db.First(&f, "name = ?", feed).Error; err != nil {
-		return nil, err
-	}
-
-	return &f, nil
 }
 
 func (s *Server) handleRepost(ctx context.Context, u *User, rec *bsky.FeedRepost, path string) error {
