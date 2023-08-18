@@ -703,6 +703,7 @@ func backfillLatestPost(ctx context.Context, s *Server, u *User, limit int, star
 
 func (s *Server) getSimilarToLikes(ctx context.Context, u *User, limit int, cursor *string) ([]*bsky.FeedDefs_SkeletonFeedPost, *string, error) {
 	start := 0
+	limit = 10
 	if cursor != nil {
 		num, err := strconv.Atoi(*cursor)
 		if err != nil {
@@ -716,10 +717,17 @@ func (s *Server) getSimilarToLikes(ctx context.Context, u *User, limit int, curs
 
 	userId := u.ID
 
-	subQuery := fmt.Sprintf(`(SELECT images.embedding FROM images
-	JOIN feed_likes ON feed_likes.ref = images.ref
-	JOIN users ON users.id = feed_likes.uid
-	WHERE users.id = %d ORDER BY feed_likes.ID desc LIMIT 1)`, userId)
+	subQuery := fmt.Sprintf(`
+	(SELECT AVG(sub.images_embedding)
+	FROM (
+	  SELECT images.embedding AS images_embedding
+	  FROM images
+	  JOIN feed_likes ON feed_likes.ref = images.ref
+	  JOIN users ON users.id = feed_likes.uid
+	  WHERE users.id = %d
+	  ORDER BY feed_likes.id desc
+	  LIMIT 1
+	) AS sub)`, userId)
 
 	query := fmt.Sprintf(`
 	SELECT post_refs.*
@@ -727,19 +735,19 @@ func (s *Server) getSimilarToLikes(ctx context.Context, u *User, limit int, curs
 	JOIN post_refs ON post_refs.id = images.ref
 	WHERE images.id IS NOT NULL
 	AND NOT post_refs.is_reply
-	AND images.id != (
+	AND images.id not in (
 		SELECT images.id
 		FROM images
 		JOIN feed_likes ON feed_likes.ref = images.ref
 		JOIN users ON users.id = feed_likes.uid
 		WHERE users.id = %d
 		ORDER BY feed_likes.ID desc
-		LIMIT 1
+		LIMIT 5
 	)
 	ORDER BY images.embedding <=> %s
-	LIMIT 30
+	LIMIT %d
 	OFFSET %d;
-	`, userId, subQuery, start)
+	`, userId, subQuery, limit, start)
 
 	err := s.db.Debug().Raw(query).Scan(&out).Error
 	if err != nil {

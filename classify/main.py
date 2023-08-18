@@ -12,11 +12,6 @@ from clip_onnx import clip_onnx
 device = "cpu"
 model, preprocess = clip.load("ViT-B/32", device=device, jit=False)
 
-visual_path = "clip_visual.onnx"
-textual_path = "clip_textual.onnx"
-
-onnx_model = clip_onnx(model, visual_path=visual_path, textual_path=textual_path)
-
 onnx_model = clip_onnx(None)
 onnx_model.load_onnx(visual_path="visual.onnx",
                      textual_path="textual.onnx",
