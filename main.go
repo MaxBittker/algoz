@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -90,6 +92,8 @@ type Server struct {
 	userLk    sync.Mutex
 	userCache *lru.Cache
 	keyCache  *lru.Cache
+
+	testProxy *httputil.ReverseProxy
 }
 
 type feedSpec struct {
@@ -130,7 +134,7 @@ var runCmd = &cli.Command{
 			Name: "auto-tls-domain",
 		},
 		&cli.BoolFlag{
-			Name: "no-index",
+			Name: "feed-test",
 		},
 		&cli.StringFlag{
 			Name: "img-class-host",
@@ -210,6 +214,7 @@ var runCmd = &cli.Command{
 		// db.Exec("ALTER TABLE blocks DROP COLUMN id;")
 		// db.Exec("ALTER TABLE blocks RENAME COLUMN temp_id TO id;")
 		// db.Exec("ALTER TABLE blocks ADD PRIMARY KEY (id);")
+		// create index image_ref on images (ref);
 		//exit the process:
 
 		// db.Exec("CREATE TABLE images (id SERIAL PRIMARY KEY, Ref bigint, hash CHAR(64), embedding vector(512));");
@@ -273,6 +278,18 @@ var runCmd = &cli.Command{
 
 		ucache, _ := lru.New(100000)
 		kcache, _ := lru.New(100000)
+
+		var testProxy *httputil.ReverseProxy
+
+		if !cctx.Bool("feed-test") {
+			url1, err := url.Parse("http://localhost:3338")
+			if err != nil {
+				panic(err)
+			}
+
+			testProxy = httputil.NewSingleHostReverseProxy(url1)
+		}
+
 		s := &Server{
 			db:        db,
 			bgshost:   cctx.String("atp-bgs-host"),
@@ -282,6 +299,7 @@ var runCmd = &cli.Command{
 			userCache: ucache,
 			keyCache:  kcache,
 			fbm:       make(map[string]FeedBuilder),
+			testProxy: testProxy,
 		}
 
 		if d := cctx.String("did-doc"); d != "" {
@@ -334,15 +352,20 @@ var runCmd = &cli.Command{
 		if !cctx.Bool("classifier-mode") {
 			go func() {
 
+				var port = ":3339"
+				if cctx.Bool("feed-test") {
+					port = ":3338"
+				}
 				if atd != "" {
-					panic(e.StartAutoTLS(":3339"))
+					panic(e.StartAutoTLS(port))
 				} else {
-					panic(e.Start(":3339"))
+					panic(e.Start(port))
 				}
 			}()
 		}
 
-		if cctx.Bool("no-index") {
+		if cctx.Bool("feed-test") {
+			// block and don't index firehose
 			select {}
 		}
 		// go func() {
@@ -487,6 +510,11 @@ func (s *Server) handleGetFeedSkeleton(e echo.Context) error {
 	defer span.End()
 
 	feed := e.QueryParam("feed")
+	if s.testProxy != nil && feed == "at://did:plc:wmhp7mubpgafjggwvaxeozmu/app.bsky.feed.generator/hmm" {
+		log.Error("PROXYING!")
+		s.testProxy.ServeHTTP(e.Response(), e.Request())
+		return nil
+	}
 
 	span.SetAttributes(attribute.String("feed", feed))
 
@@ -560,6 +588,23 @@ func (s *Server) handleGetFeedSkeleton(e echo.Context) error {
 	}
 
 	switch puri.Rkey {
+	case "hmm":
+		if authedUser == nil {
+			return &echo.HTTPError{
+				Code:    403,
+				Message: "auth required for feed",
+			}
+		}
+		feed, outcurs, err := s.getSimilarToLikes(ctx, authedUser, limit, cursor)
+		if err != nil {
+			return err
+		}
+
+		return e.JSON(200, &bsky.FeedGetFeedSkeleton_Output{
+			Feed:   feed,
+			Cursor: outcurs,
+		})
+
 	case "river":
 		if authedUser == nil {
 			return &echo.HTTPError{
@@ -726,27 +771,27 @@ func (s *Server) getSimilarToLikes(ctx context.Context, u *User, limit int, curs
 	  JOIN users ON users.id = feed_likes.uid
 	  WHERE users.id = %d
 	  ORDER BY feed_likes.id desc
-	  LIMIT 1
+	  LIMIT 2
 	) AS sub)`, userId)
 
 	query := fmt.Sprintf(`
 	SELECT post_refs.*
 	FROM images
 	JOIN post_refs ON post_refs.id = images.ref
-	WHERE images.id IS NOT NULL
-	AND NOT post_refs.is_reply
-	AND images.id not in (
+	LEFT JOIN (
 		SELECT images.id
 		FROM images
 		JOIN feed_likes ON feed_likes.ref = images.ref
 		JOIN users ON users.id = feed_likes.uid
 		WHERE users.id = %d
-		ORDER BY feed_likes.ID desc
-		LIMIT 5
-	)
+		ORDER BY feed_likes.id desc
+		LIMIT 15
+	) AS excluded_images ON excluded_images.id = images.id
+	WHERE images.id IS NOT NULL
+	AND NOT post_refs.is_reply
+	AND excluded_images.id IS NULL
 	ORDER BY images.embedding <=> %s
-	LIMIT %d
-	OFFSET %d;
+	LIMIT %d OFFSET %d;
 	`, userId, subQuery, limit, start)
 
 	err := s.db.Debug().Raw(query).Scan(&out).Error
