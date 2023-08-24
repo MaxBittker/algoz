@@ -13,9 +13,11 @@ require (
 	github.com/ipfs/go-cid v0.4.1
 	github.com/ipfs/go-log v1.0.5
 	github.com/labstack/echo/v4 v4.10.2
+	github.com/pgvector/pgvector-go v0.1.1
 	github.com/urfave/cli/v2 v2.25.3
 	go.opentelemetry.io/otel v1.16.0
 	golang.org/x/crypto v0.7.0
+	gonum.org/v1/gonum v0.14.0
 	gorm.io/gorm v1.25.1
 )
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net/http/httputil"
 	"net/url"
 	"os"
@@ -30,11 +31,13 @@ import (
 	logging "github.com/ipfs/go-log"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"github.com/pgvector/pgvector-go"
 	"github.com/whyrusleeping/algoz/models"
 	. "github.com/whyrusleeping/algoz/models"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"golang.org/x/crypto/acme/autocert"
+	"gonum.org/v1/gonum/mat"
 
 	cli "github.com/urfave/cli/v2"
 
@@ -595,7 +598,7 @@ func (s *Server) handleGetFeedSkeleton(e echo.Context) error {
 				Message: "auth required for feed",
 			}
 		}
-		feed, outcurs, err := s.getSimilarToLikes(ctx, authedUser, limit, cursor)
+		feed, outcurs, err := s.getSimilarToLikes2(ctx, authedUser, limit, cursor)
 		if err != nil {
 			return err
 		}
@@ -746,9 +749,15 @@ func backfillLatestPost(ctx context.Context, s *Server, u *User, limit int, star
 	}
 }
 
+var debug = false
+
 func (s *Server) getSimilarToLikes(ctx context.Context, u *User, limit int, cursor *string) ([]*bsky.FeedDefs_SkeletonFeedPost, *string, error) {
 	start := 0
-	limit = 10
+	limit = 6
+
+	window := 3
+	nudge := 0
+
 	if cursor != nil {
 		num, err := strconv.Atoi(*cursor)
 		if err != nil {
@@ -757,22 +766,50 @@ func (s *Server) getSimilarToLikes(ctx context.Context, u *User, limit int, curs
 
 		start = num
 	}
-
-	var out []PostRef
-
+	if start == 0 && debug {
+		limit = window
+		nudge = window
+	}
 	userId := u.ID
 
-	subQuery := fmt.Sprintf(`
-	(SELECT AVG(sub.images_embedding)
-	FROM (
-	  SELECT images.embedding AS images_embedding
+	var vectors []pgvector.Vector
+
+	s.db.Debug().Raw(fmt.Sprintf(`
+	SELECT images.embedding
 	  FROM images
 	  JOIN feed_likes ON feed_likes.ref = images.ref
-	  JOIN users ON users.id = feed_likes.uid
-	  WHERE users.id = %d
+	  WHERE feed_likes.uid = %d
 	  ORDER BY feed_likes.id desc
-	  LIMIT 2
-	) AS sub)`, userId)
+	  LIMIT %d
+	  `, userId, window)).Scan(&vectors)
+
+	sum := mat.NewVecDense(512, nil)
+	for i, v := range vectors {
+
+		v32 := v.Slice()
+		v64 := make([]float64, len(v32))
+		for i, a := range v32 {
+			v64[i] = float64(a)
+		}
+		vV := mat.NewVecDense(512, v64)
+		// magnitude := floats.Norm(v64, 2)
+		linearRolloff := 1 - (float64(i / len(vectors)))
+		// expRolloff := math.Exp(float64(i)/float64(len(vectors))) / math.E
+		randFactor := (rand.Float64() * 1.0) + 0.1
+		if i == 0 {
+			randFactor = (rand.Float64() * 1.0) + 0.5
+		}
+		sum.AddScaledVec(sum, randFactor*linearRolloff*1.0/float64(len(vectors)), vV)
+	}
+
+	sum32 := make([]float32, 512)
+	for i, a := range sum.RawVector().Data {
+		sum32[i] = float32(a)
+	}
+
+	target := pgvector.NewVector(sum32)
+
+	var out []PostRef
 
 	query := fmt.Sprintf(`
 	SELECT post_refs.*
@@ -782,17 +819,33 @@ func (s *Server) getSimilarToLikes(ctx context.Context, u *User, limit int, curs
 		SELECT images.id
 		FROM images
 		JOIN feed_likes ON feed_likes.ref = images.ref
-		JOIN users ON users.id = feed_likes.uid
-		WHERE users.id = %d
+		WHERE feed_likes.uid = %d
 		ORDER BY feed_likes.id desc
 		LIMIT 15
 	) AS excluded_images ON excluded_images.id = images.id
 	WHERE images.id IS NOT NULL
 	AND NOT post_refs.is_reply
 	AND excluded_images.id IS NULL
-	ORDER BY images.embedding <=> %s
-	LIMIT %d OFFSET %d;
-	`, userId, subQuery, limit, start)
+	ORDER BY images.embedding <=> '%s'
+	LIMIT %d
+	OFFSET %d;
+	`, userId, target.String(), limit, start-nudge)
+
+	if start == 0 && debug {
+		query = fmt.Sprintf(`
+		SELECT * FROM (
+			SELECT DISTINCT ON (post_refs.id) post_refs.*, feed_likes.id as like_id
+			FROM post_refs
+			JOIN images ON post_refs.id = images.ref
+			JOIN feed_likes ON post_refs.id = feed_likes.ref
+			WHERE images.id IS NOT NULL
+			AND feed_likes.uid = %d
+			ORDER BY post_refs.id, feed_likes.id DESC
+		) AS subquery
+		ORDER BY like_id DESC
+		LIMIT %d;
+	`, userId, window)
+	}
 
 	err := s.db.Debug().Raw(query).Scan(&out).Error
 	if err != nil {
@@ -800,6 +853,118 @@ func (s *Server) getSimilarToLikes(ctx context.Context, u *User, limit int, curs
 	}
 
 	fp, err := s.postsToFeed(ctx, out)
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	curs := fmt.Sprint(start + limit)
+
+	return fp, &curs, nil
+}
+
+func (s *Server) getSimilarToLikes2(ctx context.Context, u *User, limit int, cursor *string) ([]*bsky.FeedDefs_SkeletonFeedPost, *string, error) {
+	start := 0
+	limit = 10
+
+	window := 3
+
+	if cursor != nil {
+		num, err := strconv.Atoi(*cursor)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid cursor: %w", err)
+		}
+
+		start = num
+	}
+	if start == 0 {
+		limit = window
+	}
+	userId := u.ID
+
+	var vectors []pgvector.Vector
+
+	s.db.Debug().Raw(fmt.Sprintf(`
+	SELECT images.embedding
+	  FROM images
+	  JOIN feed_likes ON feed_likes.ref = images.ref
+	  WHERE feed_likes.uid = %d
+	  ORDER BY feed_likes.id desc
+	  LIMIT %d
+	  `, userId, window)).Scan(&vectors)
+
+	sum := mat.NewVecDense(512, nil)
+	for i, v := range vectors {
+
+		v32 := v.Slice()
+		v64 := make([]float64, len(v32))
+		for i, a := range v32 {
+			v64[i] = float64(a)
+		}
+		vV := mat.NewVecDense(512, v64)
+		// magnitude := floats.Norm(v64, 2)
+		linearRolloff := 1 - (float64(i / len(vectors)))
+		// expRolloff := math.Exp(float64(i)/float64(len(vectors))) / math.E
+		randFactor := (rand.Float64() * 1.0) + 0.1
+		if i == 0 {
+			randFactor = (rand.Float64() * 1.0) + 0.5
+		}
+		sum.AddScaledVec(sum, randFactor*linearRolloff*1.0/float64(len(vectors)), vV)
+	}
+
+	sum32 := make([]float32, 512)
+	for i, a := range sum.RawVector().Data {
+		sum32[i] = float32(a)
+	}
+
+	target := pgvector.NewVector(sum32)
+
+	var out []PostRef
+
+	query := fmt.Sprintf(`
+	SELECT post_refs.*
+	FROM images
+	JOIN post_refs ON post_refs.id = images.ref
+	LEFT JOIN (
+		SELECT images.id
+		FROM images
+		JOIN feed_likes ON feed_likes.ref = images.ref
+		WHERE feed_likes.uid = %d
+		ORDER BY feed_likes.id desc
+		LIMIT 15
+	) AS excluded_images ON excluded_images.id = images.id
+	WHERE images.id IS NOT NULL
+	AND NOT post_refs.is_reply
+	AND excluded_images.id IS NULL
+	ORDER BY images.embedding <=> '%s'
+	LIMIT %d
+	OFFSET %d;
+	`, userId, target.String(), limit, start-window)
+	// `, userId, target.String(), limit)
+
+	if start == 0 {
+		query = fmt.Sprintf(`
+		SELECT * FROM (
+			SELECT DISTINCT ON (post_refs.id) post_refs.*, feed_likes.id as like_id
+			FROM post_refs
+			JOIN images ON post_refs.id = images.ref
+			JOIN feed_likes ON post_refs.id = feed_likes.ref
+			WHERE images.id IS NOT NULL
+			AND feed_likes.uid = %d
+			ORDER BY post_refs.id, feed_likes.id DESC
+		) AS subquery
+		ORDER BY like_id DESC
+		LIMIT %d;
+	`, userId, window)
+	}
+
+	err := s.db.Debug().Raw(query).Scan(&out).Error
+	if err != nil {
+		return nil, nil, err
+	}
+
+	fp, err := s.postsToFeed(ctx, out)
+
 	if err != nil {
 		return nil, nil, err
 	}
