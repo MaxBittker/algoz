@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -43,7 +45,11 @@ func (ip *ImageProcessor) HandlePost(ctx context.Context, u *User, pref *PostRef
 		for _, img := range rec.Embed.EmbedImages.Images {
 			hash, embedding, err := ip.fetchAndEmbedImage(ctx, ip.db, u.Did, img)
 
-			ip.db.Exec(("INSERT INTO images (ref, hash, embedding) VALUES (?, ?, ?)"), pref.ID, hash, embedding)
+			path := fmt.Sprintf("%s/%s", u.Did, img.Image.Ref)
+			// cdnUrl := fmt.Sprintf("https://av-cdn.bsky.app/img/feed_thumbnail/plain/%s@jpeg", path)
+			// log.Error(cdnUrl)
+
+			ip.db.Exec(("INSERT INTO images (ref, path, hash, embedding) VALUES (?, ?, ?, ?)"), pref.ID, path, hash, embedding)
 			if err := ip.db.Model(&PostRef{}).Where("id = ?", pref.ID).Update("embedded", true).Error; err != nil {
 				return err
 			}
@@ -72,8 +78,13 @@ func (ip *ImageProcessor) HandleLike(ctx context.Context, u *User, pref *PostRef
 			if err != nil {
 				return fmt.Errorf("fetch & embed failed: %w", err)
 			}
+			// this is repeating
+			path := fmt.Sprintf("%s/%s", puri.Did, img.Image.Ref)
+			// cdnUrl := fmt.Sprintf("https://av-cdn.bsky.app/img/feed_thumbnail/plain/%s@jpeg", path)
+			// log.Error(cdnUrl)
 
-			ip.db.Exec(("INSERT INTO images (ref, hash, embedding) VALUES (?, ?, ?)"), pref.ID, hash, embedding)
+			ip.db.Exec(("INSERT INTO images (ref, path, hash, embedding) VALUES (?, ?, ?, ?)"), pref.ID, path, hash, embedding)
+
 			if err := ip.db.Model(&PostRef{}).Where("id = ?", pref.ID).Update("embedded", true).Error; err != nil {
 				return err
 			}
@@ -90,9 +101,36 @@ func (ip *ImageProcessor) HandleLike(ctx context.Context, u *User, pref *PostRef
 }
 
 func (ip *ImageProcessor) fetchAndEmbedImage(ctx context.Context, db *gorm.DB, did string, img *bsky.EmbedImages_Image) (string, string, error) {
-	blob, err := atproto.SyncGetBlob(ctx, ip.xrpcc, img.Image.Ref.String(), did)
+	// blob, err := atproto.SyncGetBlob(ctx, ip.xrpcc, img.Image.Ref.String(), did)
 
+	//build url:
+	cdnUrl := fmt.Sprintf("https://av-cdn.bsky.app/img/feed_thumbnail/plain/%s/%s@jpeg", did, img.Image.Ref)
+	// log.Error(cdnUrl)
+
+	// Getting the image data
+	resp, err := http.Get(cdnUrl)
 	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+
+	// Reading the body to Bytes
+	blob, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Error("no img1")
+		log.Error(cdnUrl)
+		return "", "", err
+	}
+
+	if len(blob) < 100 {
+		log.Error("refetching")
+		log.Error("no img2")
+		log.Error(cdnUrl)
+		blob, err = atproto.SyncGetBlob(ctx, ip.xrpcc, img.Image.Ref.String(), did)
+	}
+	if err != nil {
+		log.Error("no img3")
+		log.Error(cdnUrl)
 		return "", "", err
 	}
 
@@ -117,6 +155,9 @@ func (ip *ImageProcessor) fetchAndEmbedImage(ctx context.Context, db *gorm.DB, d
 
 	embedding, err := ip.ic.Embed(ctx, blob)
 
+	if err != nil {
+		return "", "", err
+	}
 	strs := make([]string, len(embedding))
 	for i, f := range embedding {
 		strs[i] = strconv.FormatFloat(f, 'f', -1, 64)

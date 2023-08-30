@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime/multipart"
 	"net/http"
@@ -47,6 +48,7 @@ func (ic *ImageEmbedder) Embed(ctx context.Context, img []byte) ([]float64, erro
 	type Response struct {
 		FileSize int64       `json:"file_size"`
 		Values   [][]float64 `json:"values"`
+		Error    string      `json:"error"`
 	}
 
 	res, err := http.DefaultClient.Do(req)
@@ -66,5 +68,8 @@ func (ic *ImageEmbedder) Embed(ctx context.Context, img []byte) ([]float64, erro
 		return nil, err
 	}
 
+	if out.Values == nil || out.Error != "" || len(out.Values) == 0 {
+		return nil, errors.New(out.Error)
+	}
 	return out.Values[0], nil
 }

@@ -32,11 +32,19 @@ def embed_image():
     # start timer:
     start = time.time()
 
-    image = Image.open(BytesIO(raw)).convert('RGB')
-    image = preprocess(image).unsqueeze(0).cpu()  # [1, 3, 224, 224]
-    image_onnx = image.detach().cpu().numpy().astype(np.float32)
+    try: 
+        image = Image.open(BytesIO(raw)).convert('RGB')
+        image = preprocess(image).unsqueeze(0).cpu()  # [1, 3, 224, 224]
+        image_onnx = image.detach().cpu().numpy().astype(np.float32)
+    except Exception as e:
+        print(e)
+        print(len(raw))
+        return {"error":str(e)}
 
     image_features = onnx_model.encode_image(image_onnx)
+
+    #normalize:
+    # image_features = image_features / np.linalg.norm(image_features, axis=1, keepdims=True)
 
     # calculate time elapsed in ms and update stats vars:
     elapsed = round((time.time() - start) * 1000)
@@ -63,6 +71,7 @@ def print_stats():
 
 # Start the stats thread
 stats_thread = threading.Thread(target=print_stats)
+stats_thread.daemon = True
 stats_thread.start()
 
 # Start the server

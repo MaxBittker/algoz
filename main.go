@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/http/httputil"
@@ -17,9 +18,9 @@ import (
 	api "github.com/bluesky-social/indigo/api"
 	"github.com/bluesky-social/indigo/api/atproto"
 	bsky "github.com/bluesky-social/indigo/api/bsky"
-	cliutil "github.com/bluesky-social/indigo/cmd/gosky/util"
 	"github.com/bluesky-social/indigo/did"
 	"github.com/bluesky-social/indigo/util"
+	cliutil "github.com/bluesky-social/indigo/util/cliutil"
 	"github.com/bluesky-social/indigo/xrpc"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	es256k "github.com/ericvolp12/jwt-go-secp256k1"
@@ -146,7 +147,7 @@ var runCmd = &cli.Command{
 	Action: func(cctx *cli.Context) error {
 
 		log.Info("Connecting to database")
-		db, err := cliutil.SetupDatabase(cctx.String("database-url"))
+		db, err := cliutil.SetupDatabase(cctx.String("database-url"), 40)
 		if err != nil {
 			return err
 		}
@@ -313,17 +314,8 @@ var runCmd = &cli.Command{
 
 			s.didDoc = doc
 		}
-
-		mydid := "did:plc:wmhp7mubpgafjggwvaxeozmu"
-		middlebit := mydid + "/app.bsky.feed.generator/"
-
 		// Create some initial feed definitions
 		s.feeds = []feedSpec{}
-
-		enjoyuri := "at://" + middlebit + "enjoy"
-		s.AddFeedBuilder(enjoyuri, &EnjoyFeed{
-			s: s,
-		})
 
 		s.AddProcessor(NewImageProcessor("http://0.0.0.0:8181/", s.db, s.xrpcc))
 
@@ -471,6 +463,7 @@ func (s *Server) getKeyForDid(did string) (any, error) {
 
 		return ecp, nil
 	default:
+		log.Error("unrecognized key type")
 		return nil, fmt.Errorf("unrecognized key type: %q", pubk.Type)
 
 	}
@@ -829,23 +822,7 @@ func (s *Server) getSimilarToLikes(ctx context.Context, u *User, limit int, curs
 	ORDER BY images.embedding <=> '%s'
 	LIMIT %d
 	OFFSET %d;
-	`, userId, target.String(), limit, start-nudge)
-
-	if start == 0 && debug {
-		query = fmt.Sprintf(`
-		SELECT * FROM (
-			SELECT DISTINCT ON (post_refs.id) post_refs.*, feed_likes.id as like_id
-			FROM post_refs
-			JOIN images ON post_refs.id = images.ref
-			JOIN feed_likes ON post_refs.id = feed_likes.ref
-			WHERE images.id IS NOT NULL
-			AND feed_likes.uid = %d
-			ORDER BY post_refs.id, feed_likes.id DESC
-		) AS subquery
-		ORDER BY like_id DESC
-		LIMIT %d;
-	`, userId, window)
-	}
+	`, userId, target.String(), limit, start)
 
 	err := s.db.Debug().Raw(query).Scan(&out).Error
 	if err != nil {
@@ -865,9 +842,10 @@ func (s *Server) getSimilarToLikes(ctx context.Context, u *User, limit int, curs
 
 func (s *Server) getSimilarToLikes2(ctx context.Context, u *User, limit int, cursor *string) ([]*bsky.FeedDefs_SkeletonFeedPost, *string, error) {
 	start := 0
-	limit = 10
+	limit = 6
 
 	window := 3
+	nudge := 0
 
 	if cursor != nil {
 		num, err := strconv.Atoi(*cursor)
@@ -877,10 +855,13 @@ func (s *Server) getSimilarToLikes2(ctx context.Context, u *User, limit int, cur
 
 		start = num
 	}
-	if start == 0 {
+	if start == 0 && debug {
 		limit = window
+		nudge = window
 	}
 	userId := u.ID
+
+	// windowSlide := start / limit
 
 	var vectors []pgvector.Vector
 
@@ -893,23 +874,61 @@ func (s *Server) getSimilarToLikes2(ctx context.Context, u *User, limit int, cur
 	  LIMIT %d
 	  `, userId, window)).Scan(&vectors)
 
+	type likeMeta struct {
+		Did string
+		Ref int
+	}
+	var metadata []likeMeta
+
+	s.db.Debug().Raw(fmt.Sprintf(`
+	  SELECT users.did, images.ref
+	  FROM images
+	  JOIN feed_likes ON feed_likes.ref = images.ref
+	  JOIN post_refs on post_refs.id = images.ref
+	  JOIN users on users.id = post_refs.uid
+	  WHERE feed_likes.uid = %d
+	  ORDER BY feed_likes.id desc
+	  LIMIT %d
+	  `, userId, window)).Scan(&metadata)
+
 	sum := mat.NewVecDense(512, nil)
 	for i, v := range vectors {
+
+		var probe []float64
+
+		query := fmt.Sprintf(`
+		SELECT cosine_distance(images.embedding, '%s') as d
+		FROM images
+		ORDER BY images.embedding <=> '%s'
+		LIMIT 1
+		OFFSET 250;
+		`, v.String(), v.String())
+		err := s.db.Raw(query).Scan(&probe).Error
+		if err != nil {
+			log.Error(err)
+		}
+		log.Error(probe[0])
+		cdnUrl := fmt.Sprintf("https://av-cdn.bsky.app/img/feed_thumbnail/plain/%s/%d@jpeg", metadata[i].Did, metadata[i].Ref)
+		// cdnUrl := fmt.Sprintf("https://bsky.app/profile/%s/post/%s", metadata[i].Handle, metadata[i].Cid)
+		log.Error(cdnUrl)
 
 		v32 := v.Slice()
 		v64 := make([]float64, len(v32))
 		for i, a := range v32 {
 			v64[i] = float64(a)
 		}
+
 		vV := mat.NewVecDense(512, v64)
 		// magnitude := floats.Norm(v64, 2)
-		linearRolloff := 1 - (float64(i / len(vectors)))
+		linearRolloff := 1 - float64(i)/float64(len(vectors))
 		// expRolloff := math.Exp(float64(i)/float64(len(vectors))) / math.E
-		randFactor := (rand.Float64() * 1.0) + 0.1
+		// log.Error(linearRolloff)
+		randFactor := (rand.Float64() * 1.0)
 		if i == 0 {
-			randFactor = (rand.Float64() * 1.0) + 0.5
+			randFactor = (rand.Float64() * 1.0) + 0.1
 		}
-		sum.AddScaledVec(sum, randFactor*linearRolloff*1.0/float64(len(vectors)), vV)
+		sum.AddScaledVec(sum, randFactor*linearRolloff*probe[0], vV)
+		// sum.AddScaledVec(sum, randFactor*linearRolloff*1.0/float64(len(vectors)), vV)
 	}
 
 	sum32 := make([]float32, 512)
@@ -939,10 +958,9 @@ func (s *Server) getSimilarToLikes2(ctx context.Context, u *User, limit int, cur
 	ORDER BY images.embedding <=> '%s'
 	LIMIT %d
 	OFFSET %d;
-	`, userId, target.String(), limit, start-window)
-	// `, userId, target.String(), limit)
+	`, userId, target.String(), limit, start-nudge)
 
-	if start == 0 {
+	if start == 0 && debug {
 		query = fmt.Sprintf(`
 		SELECT * FROM (
 			SELECT DISTINCT ON (post_refs.id) post_refs.*, feed_likes.id as like_id
@@ -1115,8 +1133,11 @@ func (s *Server) deleteRepost(ctx context.Context, u *User, path string) error {
 	rkey := parts[len(parts)-1]
 
 	var rp FeedRepost
-	if err := s.db.First(&rp, "uid = ? AND rkey = ?", u.ID, rkey).Error; err != nil {
+	if err := s.db.Limit(1).Find(&rp, "uid = ? AND rkey = ?", u.ID, rkey).Error; err != nil {
 		return err
+	}
+	if rp.ID == 0 {
+		return errors.New("repost found")
 	}
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
@@ -1395,6 +1416,44 @@ func (s *Server) handleLike(ctx context.Context, u *User, rec *bsky.FeedLike, pa
 				return err
 			}
 		}
+	} else if p.HasImage && p.Embedded {
+
+		var ref []int
+
+		s.db.Raw(fmt.Sprintf(`
+		  SELECT ref
+		  FROM images
+		  WHERE ref = %d
+		  and 
+		  path is null
+		  `, p.ID)).Scan(&ref)
+
+		if len(ref) == 1 {
+
+			p_rec, _, err := s.getRecord(ctx, rec.Subject.Uri)
+			if err != nil {
+				return err
+			}
+			if p_rec.Embed != nil && p_rec.Embed.EmbedImages != nil {
+				for _, img := range p_rec.Embed.EmbedImages.Images {
+
+					puri, err := util.ParseAtUri(rec.Subject.Uri)
+					if err != nil {
+						return fmt.Errorf("ParseAtUri failed: %w", err)
+					}
+
+					path := fmt.Sprintf("%s/%s", puri.Did, img.Image.Ref)
+					// cdnUrl := fmt.Sprintf("https://av-cdn.bsky.app/img/feed_thumbnail/plain/%s@jpeg", path)
+					// log.Error(cdnUrl)
+					if err := s.db.Model(&Image{}).Where("ref = ?", p.ID).Update("path", path).Error; err != nil {
+						return err
+					}
+
+				}
+			}
+
+		}
+
 	}
 
 	return nil
