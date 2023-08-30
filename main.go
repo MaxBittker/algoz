@@ -22,7 +22,6 @@ import (
 	"github.com/bluesky-social/indigo/util"
 	cliutil "github.com/bluesky-social/indigo/util/cliutil"
 	"github.com/bluesky-social/indigo/xrpc"
-	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	es256k "github.com/ericvolp12/jwt-go-secp256k1"
 	"github.com/getsentry/sentry-go"
 	sentryecho "github.com/getsentry/sentry-go/echo"
@@ -454,20 +453,11 @@ func (s *Server) getKeyForDid(did string) (any, error) {
 
 	switch pubk.Type {
 	case "EcdsaSecp256k1VerificationKey2019":
-		pub, err := secp256k1.ParsePubKey(pubk.Raw.([]byte))
-		if err != nil {
-			return nil, fmt.Errorf("pubkey was invalid: %w", err)
-		}
-
-		ecp := pub.ToECDSA()
-
-		return ecp, nil
+		return pubk.Raw, nil
 	default:
 		log.Error("unrecognized key type")
 		return nil, fmt.Errorf("unrecognized key type: %q", pubk.Type)
-
 	}
-
 }
 
 func (s *Server) fetchKey(tok *jwt.Token) (any, error) {
@@ -533,11 +523,12 @@ func (s *Server) handleGetFeedSkeleton(e echo.Context) error {
 		p := new(jwt.Parser)
 		p.ValidMethods = []string{es256k.SigningMethodES256K.Alg()}
 		tok, err := p.Parse(parts[1], s.fetchKey)
+
 		if err != nil {
+			log.Error(err)
 			return err
 		}
 		did := tok.Claims.(jwt.MapClaims)["iss"].(string)
-		//did := "did:plc:vpkhqolt662uhesyj6nxm7ys"
 
 		u, err := s.getOrCreateUser(ctx, did)
 		if err != nil {
@@ -742,14 +733,13 @@ func backfillLatestPost(ctx context.Context, s *Server, u *User, limit int, star
 	}
 }
 
-var debug = false
+var debug = true
 
 func (s *Server) getSimilarToLikes(ctx context.Context, u *User, limit int, cursor *string) ([]*bsky.FeedDefs_SkeletonFeedPost, *string, error) {
 	start := 0
 	limit = 6
 
 	window := 3
-	nudge := 0
 
 	if cursor != nil {
 		num, err := strconv.Atoi(*cursor)
@@ -759,10 +749,7 @@ func (s *Server) getSimilarToLikes(ctx context.Context, u *User, limit int, curs
 
 		start = num
 	}
-	if start == 0 && debug {
-		limit = window
-		nudge = window
-	}
+
 	userId := u.ID
 
 	var vectors []pgvector.Vector
@@ -786,11 +773,12 @@ func (s *Server) getSimilarToLikes(ctx context.Context, u *User, limit int, curs
 		}
 		vV := mat.NewVecDense(512, v64)
 		// magnitude := floats.Norm(v64, 2)
-		linearRolloff := 1 - (float64(i / len(vectors)))
+		linearRolloff := 1 - float64(i)/float64(len(vectors))
+
 		// expRolloff := math.Exp(float64(i)/float64(len(vectors))) / math.E
-		randFactor := (rand.Float64() * 1.0) + 0.1
+		randFactor := (rand.Float64() * 1.0) + 0.001
 		if i == 0 {
-			randFactor = (rand.Float64() * 1.0) + 0.5
+			randFactor = (rand.Float64() * 1.0) + 0.1
 		}
 		sum.AddScaledVec(sum, randFactor*linearRolloff*1.0/float64(len(vectors)), vV)
 	}
