@@ -327,7 +327,11 @@ var runCmd = &cli.Command{
 			}
 		}
 
-		e.Use(middleware.CORS())
+		if !cctx.Bool("feed-test") {
+			e.Use(middleware.CORS())
+		}
+
+		e.GET("/neighbors", s.handleGetNeighbors)
 		e.GET("/xrpc/app.bsky.feed.getFeedSkeleton", s.handleGetFeedSkeleton)
 		e.GET("/xrpc/app.bsky.feed.describeFeedGenerator", s.handleDescribeFeedGenerator)
 		e.GET("/.well-known/did.json", s.handleServeDidDoc)
@@ -359,6 +363,9 @@ var runCmd = &cli.Command{
 		}
 
 		if cctx.Bool("feed-test") {
+			go func() {
+				s.pollAllImagePaths(context.Background())
+			}()
 			// block and don't index firehose
 			select {}
 		}
@@ -374,6 +381,70 @@ var runCmd = &cli.Command{
 	},
 }
 
+func (s *Server) pollAllImagePaths(ctx context.Context) error {
+	c := time.Tick(30000 * time.Millisecond)
+	for range c {
+
+		type imageMeta struct {
+			Rkey string
+			Did  string
+			Ref  uint
+		}
+		var images []imageMeta
+
+		s.db.Debug().Raw(`
+			SELECT post_refs.Rkey as Rkey, users.did as Did, images.ref as Ref
+			FROM images
+			JOIN post_refs ON post_refs.id = images.ref
+			Join users ON users.id = post_refs.uid
+			WHERE images.path is null
+			order by random()
+			LIMIT 100`).Scan(&images)
+
+		// var wg sync.WaitGroup
+
+		// Consumers.
+		for i := 0; i < len(images); i++ {
+			// wg.Add(1)
+			imgMeta := images[i]
+			//wait 100 mssecond
+			time.Sleep(100 * time.Millisecond)
+
+			go func(imgMeta *imageMeta) {
+				// defer wg.Done()
+				uri := fmt.Sprintf(`at://%s/app.bsky.feed.post/%s`, imgMeta.Did, imgMeta.Rkey)
+				p_rec, _, err := s.getRecord(ctx, uri)
+				if err != nil {
+					log.Error(err)
+					return
+				}
+				if p_rec.Embed != nil && p_rec.Embed.EmbedImages != nil {
+					for _, img := range p_rec.Embed.EmbedImages.Images {
+
+						puri, err := util.ParseAtUri(uri)
+						if err != nil {
+							log.Error(err)
+							return
+						}
+
+						path := fmt.Sprintf("%s/%s", puri.Did, img.Image.Ref)
+						// cdnUrl := fmt.Sprintf("https://av-cdn.bsky.app/img/feed_thumbnail/plain/%s@jpeg", path)
+						// log.Error(cdnUrl)
+						if err := s.db.Model(&Image{}).Where("ref = ?", imgMeta.Ref).Update("path", path).Error; err != nil {
+							log.Error(err)
+							return
+						}
+
+					}
+				}
+
+			}(&imgMeta)
+		}
+
+		// wg.Wait() // Wait for all goroutines to finish.
+	}
+	return nil
+}
 func (s *Server) pollAllUsersFollows(ctx context.Context) error {
 	c := time.Tick(3000 * time.Millisecond)
 	for _ = range c {
@@ -489,6 +560,94 @@ func (s *Server) fetchKey(tok *jwt.Token) (any, error) {
 
 type FeedItem struct {
 	Post string `json:"post"`
+}
+
+func (s *Server) handleGetNeighbors(e echo.Context) error {
+	if s.testProxy != nil {
+		log.Error("PROXYING!")
+		s.testProxy.ServeHTTP(e.Response(), e.Request())
+		return nil
+	}
+	// e.Request().Header.Del("Access-Control-Allow-Origin")
+	ref := e.QueryParam("ref")
+
+	var limit int = 100
+	if lims := e.QueryParam("limit"); lims != "" {
+		v, err := strconv.Atoi(lims)
+		if err != nil {
+			return err
+		}
+		limit = v
+	}
+	var err error
+
+	// r.URL.Query().Get("param") will return the string value of query param
+	paramStr := e.QueryParam("drop")
+	log.Error(paramStr)
+
+	// Use strconv.Atoi to convert string to integer
+	drop, err := strconv.Atoi(paramStr)
+	if err != nil {
+		log.Error(err)
+
+		drop = 1
+	}
+	log.Error(drop)
+
+	// var cursor *string
+	// if c := e.QueryParam("cursor"); c != "" {
+	// 	cursor = &c
+	// }
+
+	type imageMeta struct {
+		Ref  int64
+		Path string
+		Hash string
+	}
+	var images []imageMeta
+	if ref == "null" || ref == "" {
+
+		err = s.db.Debug().Raw(
+			fmt.Sprintf(`
+		SELECT images.ref as Ref, images.path as Path, images.hash as Hash
+		FROM images
+		WHERE images.path is not null
+		order by random()
+		LIMIT %d`, limit)).Scan(&images).Error
+	} else {
+		err = s.db.Debug().Raw(
+			fmt.Sprintf(`
+			SELECT 
+    min(DistinctTable.Ref) as Ref,
+    min(DistinctTable.Path) as Path,
+    min(DistinctTable.Hash) as Hash
+	
+	FROM (
+        SELECT images.ref as Ref, images.path as Path, images.hash as Hash
+        FROM images
+        WHERE images.path IS NOT NULL
+		and images.ref %% %d = 0
+        ORDER BY images.embedding <=> (
+            SELECT images.embedding
+            FROM images
+            WHERE images.ref = %s
+            LIMIT 1
+        )
+        LIMIT %d
+	) AS DistinctTable
+	
+	GROUP BY DistinctTable.Hash`, drop, ref, limit)).Scan(&images).Error
+	}
+	if err != nil {
+		log.Error(err)
+		return &echo.HTTPError{
+			Code:    500,
+			Message: fmt.Sprintf("neighbors failed: %s", err),
+		}
+	}
+
+	return e.JSON(200, images)
+
 }
 
 func (s *Server) handleGetFeedSkeleton(e echo.Context) error {
@@ -862,18 +1021,15 @@ func (s *Server) getSimilarToLikes2(ctx context.Context, u *User, limit int, cur
 	  LIMIT %d
 	  `, userId, window)).Scan(&vectors)
 
-	type likeMeta struct {
-		Did string
-		Ref int
-	}
-	var metadata []likeMeta
+	// type likeMeta struct {
+	// path string
+	// }
+	var metadata []string
 
 	s.db.Debug().Raw(fmt.Sprintf(`
-	  SELECT users.did, images.ref
+	  SELECT images.path
 	  FROM images
 	  JOIN feed_likes ON feed_likes.ref = images.ref
-	  JOIN post_refs on post_refs.id = images.ref
-	  JOIN users on users.id = post_refs.uid
 	  WHERE feed_likes.uid = %d
 	  ORDER BY feed_likes.id desc
 	  LIMIT %d
@@ -896,7 +1052,8 @@ func (s *Server) getSimilarToLikes2(ctx context.Context, u *User, limit int, cur
 			log.Error(err)
 		}
 		log.Error(probe[0])
-		cdnUrl := fmt.Sprintf("https://av-cdn.bsky.app/img/feed_thumbnail/plain/%s/%d@jpeg", metadata[i].Did, metadata[i].Ref)
+
+		cdnUrl := fmt.Sprintf("https://av-cdn.bsky.app/img/feed_thumbnail/plain/%s@jpeg", strings.ReplaceAll(metadata[i], " ", ""))
 		// cdnUrl := fmt.Sprintf("https://bsky.app/profile/%s/post/%s", metadata[i].Handle, metadata[i].Cid)
 		log.Error(cdnUrl)
 
@@ -1417,7 +1574,7 @@ func (s *Server) handleLike(ctx context.Context, u *User, rec *bsky.FeedLike, pa
 		  `, p.ID)).Scan(&ref)
 
 		if len(ref) == 1 {
-
+			// log.Error(rec.Subject.Uri)
 			p_rec, _, err := s.getRecord(ctx, rec.Subject.Uri)
 			if err != nil {
 				return err
