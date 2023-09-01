@@ -81,10 +81,11 @@ type User struct {
 }
 
 type Image struct {
-	Ref       int64     `gorm:"type:bigint"`
-	Path      string    `gorm:"type:char(100)"`
-	Hash      string    `gorm:"type:char(64)"`
-	Embedding []float64 `gorm:"type:float8[]"`
+	Ref          int64     `gorm:"type:bigint"`
+	Path         string    `gorm:"type:char(100)"`
+	Hash         string    `gorm:"type:char(64)"`
+	Embedding    []float64 `gorm:"type:float8[]"`
+	PcaEmbedding []float64 `gorm:"type:float8[]"`
 }
 
 func (u *User) DoLocked(f func() error) error {

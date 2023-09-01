@@ -37,6 +37,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"golang.org/x/crypto/acme/autocert"
+	"gonum.org/v1/gonum/floats"
 	"gonum.org/v1/gonum/mat"
 
 	cli "github.com/urfave/cli/v2"
@@ -364,7 +365,8 @@ var runCmd = &cli.Command{
 
 		if cctx.Bool("feed-test") {
 			go func() {
-				s.pollAllImagePaths(context.Background())
+				// s.pollAllImagePaths(context.Background())
+				s.projectAllEmbeddings(context.Background())
 			}()
 			// block and don't index firehose
 			select {}
@@ -442,6 +444,72 @@ func (s *Server) pollAllImagePaths(ctx context.Context) error {
 		}
 
 		// wg.Wait() // Wait for all goroutines to finish.
+	}
+	return nil
+}
+
+func (s *Server) projectAllEmbeddings(ctx context.Context) error {
+	c := time.Tick(100 * time.Millisecond)
+	v1 := readCSV("components.csv")
+	log.Error(v1.Dims())
+	for range c {
+		type imageMeta struct {
+			Ref       uint
+			Embedding pgvector.Vector
+			Hash      string
+		}
+
+		var images []imageMeta
+
+		s.db.Raw(`
+		SELECT images.embedding as Embedding, images.ref as Ref, images.hash as Hash
+		FROM images
+		WHERE images.pca_embedding is null
+		and images.embedding is not null
+		and images.hash is not null
+		LIMIT 10
+		`).Scan(&images)
+
+		// sum := mat.NewVecDense(512, nil)
+		var wg sync.WaitGroup
+
+		for _, img := range images {
+			wg.Add(1)
+			// log.Error(img.Embedding.Slice())
+			go func(imgMeta *imageMeta) {
+				defer wg.Done()
+
+				v32 := imgMeta.Embedding.Slice()
+				v64 := make([]float64, len(v32))
+				for i, a := range v32 {
+					v64[i] = float64(a)
+				}
+				NormalizeVector(v64)
+				// log.Error(len(v64))
+				vV := mat.NewDense(1, 512, v64)
+
+				var multiplyResult mat.Dense
+				multiplyResult.Mul(vV, v1)
+
+				// log.Error(multiplyResult.Dims())
+
+				result := mat.NewDense(1, 128, nil)
+				// Multiply a with bT.
+				result.Mul(vV, v1)
+
+				// Output the result to verify.
+				fa := mat.Formatted(result, mat.Prefix(""), mat.Squeeze())
+				va := fmt.Sprintf("%v", fa)
+				// replace all spaces with commas:
+				va = strings.Replace(va, "  ", ",", -1)
+				// log.Error(va)
+				s.db.Exec(fmt.Sprintf("UPDATE images SET pca_embedding = '%s' where hash = '%s'", va, imgMeta.Hash))
+			}(&img)
+		}
+
+		// Consumers.
+
+		wg.Wait() // Wait for all goroutines to finish.
 	}
 	return nil
 }
@@ -571,7 +639,7 @@ func (s *Server) handleGetNeighbors(e echo.Context) error {
 	// e.Request().Header.Del("Access-Control-Allow-Origin")
 	ref := e.QueryParam("ref")
 
-	var limit int = 100
+	var limit int = 60
 	if lims := e.QueryParam("limit"); lims != "" {
 		v, err := strconv.Atoi(lims)
 		if err != nil {
@@ -612,9 +680,13 @@ func (s *Server) handleGetNeighbors(e echo.Context) error {
 		SELECT images.ref as Ref, images.path as Path, images.hash as Hash
 		FROM images
 		WHERE images.path is not null
+		and 
+		images.pca_embedding is not null
 		order by random()
 		LIMIT %d`, limit)).Scan(&images).Error
 	} else {
+		s.db.Exec("SET hnsw.ef_search = 150;")
+
 		err = s.db.Debug().Raw(
 			fmt.Sprintf(`
 			SELECT 
@@ -627,8 +699,8 @@ func (s *Server) handleGetNeighbors(e echo.Context) error {
         FROM images
         WHERE images.path IS NOT NULL
 		and images.ref %% %d = 0
-        ORDER BY images.embedding <=> (
-            SELECT images.embedding
+        ORDER BY images.pca_embedding <#> (
+            SELECT images.pca_embedding
             FROM images
             WHERE images.ref = %s
             LIMIT 1
@@ -1590,6 +1662,7 @@ func (s *Server) handleLike(ctx context.Context, u *User, rec *bsky.FeedLike, pa
 					path := fmt.Sprintf("%s/%s", puri.Did, img.Image.Ref)
 					// cdnUrl := fmt.Sprintf("https://av-cdn.bsky.app/img/feed_thumbnail/plain/%s@jpeg", path)
 					// log.Error(cdnUrl)
+					// TODO THIS IS FUCKED
 					if err := s.db.Model(&Image{}).Where("ref = ?", p.ID).Update("path", path).Error; err != nil {
 						return err
 					}
@@ -1667,4 +1740,16 @@ func (s *Server) handleBlock(ctx context.Context, u *User, rec *bsky.GraphBlock,
 	}
 
 	return nil
+}
+
+func NormalizeVector(vec []float64) {
+	norm := floats.Norm(vec, 2) //calculates the L2 norm (Euclidean norm) of vec
+	if norm == 0 {
+		// handle it accordingly
+		log.Error("Norm is zero")
+	} else {
+		for i := range vec {
+			vec[i] /= norm
+		}
+	}
 }

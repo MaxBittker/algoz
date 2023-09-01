@@ -46,7 +46,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	scalingSettings := autoscaling.AutoscaleSettings{
 		Concurrency:              1,
-		MaxConcurrency:           20,
+		MaxConcurrency:           4,
 		AutoscaleFrequency:       time.Second,
 		ThroughputBucketCount:    60,
 		ThroughputBucketDuration: time.Second,
